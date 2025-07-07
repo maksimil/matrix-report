@@ -12,6 +12,23 @@ REPORT_NAME = "index.html"
 NORMALIZE_TOL = 1e-16
 GREEN_TOL = 1e-16
 
+SUPPORTED_EXTENSIONS = [".mtx", ".npz"]
+
+
+def LoadMatrix(path):
+    if path.endswith(".mtx"):
+        return scipy.io.mmread(path)
+
+    if path.endswith(".npz"):
+        data = np.load(path)
+        nr = int(data["nrows"][0])
+        nc = int(data["ncols"][0])
+        return scipy.sparse.csr_matrix(
+            (data["values"], data["col_indices"], data["row_ptr"]), shape=(nr, nc)
+        ).tocoo()
+
+    return None
+
 
 def Normalize(x, mx):
     xscale = math.log10(x / NORMALIZE_TOL + 1)
@@ -49,64 +66,36 @@ def SaveImage(filepath, pos_array, neg_array, h, w):
     plt.imsave(filepath, rgb_array)
 
 
-argvs = list(sys.argv)
+def ExampleLine(out_dir):
+    pos_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
+    neg_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
+
+    for i in range(MAX_IMAGE):
+        for j in range(MAX_IMAGE):
+            pos_array[i][j] = 10 ** (40 * j / MAX_IMAGE - 20)
+            neg_array[i][j] = 10 ** (40 * i / MAX_IMAGE - 20)
+
+    imgpath = os.path.join(IMAGE_DIR, "example.png")
+    SaveImage(
+        os.path.join(out_dir, imgpath),
+        pos_array,
+        neg_array,
+        MAX_IMAGE,
+        MAX_IMAGE,
+    )
+
+    return (
+        "<tr><td><tt><b>Color example</b><br/>"
+        + "range 10^-20 - 10^20<br/>"
+        + f"green is < {GREEN_TOL:7.1e}</tt></td>"
+        + f'<td><img src="{imgpath}" '
+        + 'width="500" border="1" /></td></tr>'
+    )
 
 
-if len(argvs) < 3:
-    print("USAGE: matrix-report [matrix directory] [out directory]")
-    exit(-1)
-
-mat_dir = argvs[1]
-out_dir = argvs[2]
-mat_files = [
-    f
-    for f in os.listdir(mat_dir)
-    if os.path.isfile(os.path.join(mat_dir, f)) and f.endswith(".mtx")
-]
-
-print(
-    f"Matrix dir:   {mat_dir}/\nMatrix files: {mat_files}\n"
-    + f"Output file:  {os.path.join(out_dir, REPORT_NAME)}"
-)
-
-os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
-
-output = (
-    "<html><style>"
-    + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges;}\n"
-    + "tt {white-space: pre;}\n"
-    + "</style><body><table>"
-)
-
-pos_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
-neg_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
-
-for i in range(MAX_IMAGE):
-    for j in range(MAX_IMAGE):
-        pos_array[i][j] = 10 ** (40 * j / MAX_IMAGE - 20)
-        neg_array[i][j] = 10 ** (40 * i / MAX_IMAGE - 20)
-
-
-imgpath = os.path.join(IMAGE_DIR, "example.png")
-SaveImage(
-    os.path.join(out_dir, imgpath),
-    pos_array,
-    neg_array,
-    MAX_IMAGE,
-    MAX_IMAGE,
-)
-
-output += (
-    "<tr><td><tt><b>Color example</b><br/>"
-    + "range 10^-20 - 10^20<br/>"
-    + f"green is < {GREEN_TOL:7.1e}</tt></td>"
-)
-output += f'<td><img src="{imgpath}" ' + 'width="500" border="1" /></td></tr>'
-
-for f in mat_files:
-    print(f"Processing {f}")
+def MatrixLine(mat_dir, f, out_dir):
     mat_path = os.path.join(mat_dir, f)
-    mat_coo = scipy.io.mmread(mat_path)
+    mat_coo = LoadMatrix(mat_path)
 
     n, m = mat_coo.shape
     nnz = mat_coo.getnnz()
@@ -122,9 +111,16 @@ for f in mat_files:
         min_neg = min(neg_values)
         max_neg = max(neg_values)
 
-    lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
-    u_diagonal = lu.U.diagonal()
-    umfpack_cond = max(abs(x) for x in u_diagonal) / min(abs(x) for x in u_diagonal)
+    umfpack_cond = math.nan
+    if n == m:
+        try:
+            lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
+            u_diagonal = lu.U.diagonal()
+            umfpack_cond = max(abs(x) for x in u_diagonal) / min(
+                abs(x) for x in u_diagonal
+            )
+        except Exception as e:
+            print(e)
 
     rows = mat_coo.coords[0]
     cols = mat_coo.coords[1]
@@ -157,14 +153,49 @@ for f in mat_files:
         image_width,
     )
 
-    output += f"<tr><td><tt><b>{f}</b><br/>"
-    output += f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
-    output += f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
-    output += f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
-    output += f"umfpack_cond = {umfpack_cond:10.4e}</tt></td>"
-    output += f'<td><img src="{imgpath}" width="500" border="1"/></td></tr>'
+    return (
+        f"<tr><td><tt><b>{f}</b><br/>"
+        + f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
+        + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
+        + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
+        + f"umfpack_cond = {umfpack_cond:10.4e}</tt></td>"
+        + f'<td><img src="{imgpath}" width="500" border="1"/></td></tr>'
+    )
 
-output += "</table></body></html>"
 
-with open(os.path.join(out_dir, REPORT_NAME), "w") as f:
-    f.write(output)
+def CreateReport(mat_dir, files, out_dir):
+    output = (
+        "<html><style>"
+        + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges;}\n"
+        + "tt {white-space: pre;}\n"
+        + "</style><body><table>"
+    )
+
+    output += ExampleLine(out_dir)
+
+    for f in files:
+        print(f"Processing {f}")
+        output += MatrixLine(mat_dir, f, out_dir)
+
+    output += "</table></body></html>"
+
+    with open(os.path.join(out_dir, REPORT_NAME), "w") as f:
+        f.write(output)
+
+
+argvs = list(sys.argv)
+
+if len(argvs) < 3:
+    print("USAGE: matrix-report [matrix directory] [out directory]")
+    exit(-1)
+
+mat_dir = argvs[1]
+out_dir = argvs[2]
+mat_files = [
+    f
+    for f in os.listdir(mat_dir)
+    if os.path.isfile(os.path.join(mat_dir, f))
+    and os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS
+]
+
+CreateReport(mat_dir, mat_files, out_dir)
