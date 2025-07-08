@@ -88,7 +88,7 @@ def ExampleLine(out_dir):
     )
 
     return (
-        "<tr><td><tt><b>Color example</b><br/>"
+        '<tr class="page-break"><td><tt><b>Color example</b><br/>'
         + "range 10^-20 - 10^20<br/>"
         + f"green is < {GREEN_TOL:7.1e}<br/>"
         + f"images are {MAX_IMAGE}x{MAX_IMAGE} pixels</tt></td>"
@@ -174,6 +174,7 @@ def CreateReport(mat_dir, files, out_dir):
         + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges; "
         + f"width: {IMG_WIDTH}; border: 1px solid black; }}\n"
         + "tt {white-space: pre;}\n"
+        + "@media print { .page-break { break-after: page; } }\n"
         + "</style><body><table>"
     )
 
