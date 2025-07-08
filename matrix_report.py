@@ -98,8 +98,8 @@ def SaveImagePoints(filepath, mat_coo):
     indices = list(range(mat_coo.getnnz()))
     random.shuffle(indices)
 
-    cols = [mat_coo.coords[0][k] for k in indices]
-    rows = [mat_coo.coords[1][k] for k in indices]
+    rows = [mat_coo.coords[0][k] for k in indices]
+    cols = [mat_coo.coords[1][k] for k in indices]
     vals = [mat_coo.data[k] for k in indices]
 
     ax.scatter(
