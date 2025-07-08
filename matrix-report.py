@@ -6,6 +6,8 @@ from matplotlib import pyplot as plt
 import math
 
 MAX_IMAGE = 256
+IMG_WIDTH = 500
+
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 
@@ -87,9 +89,9 @@ def ExampleLine(out_dir):
     return (
         "<tr><td><tt><b>Color example</b><br/>"
         + "range 10^-20 - 10^20<br/>"
-        + f"green is < {GREEN_TOL:7.1e}</tt></td>"
-        + f'<td><img src="{imgpath}" '
-        + 'width="500" border="1" /></td></tr>'
+        + f"green is < {GREEN_TOL:7.1e}<br/>"
+        + f"images are {MAX_IMAGE}x{MAX_IMAGE} pixels</tt></td>"
+        + f'<td><img src="{imgpath}" /></td></tr>'
     )
 
 
@@ -159,14 +161,17 @@ def MatrixLine(mat_dir, f, out_dir):
         + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
         + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
         + f"umfpack_cond = {umfpack_cond:10.4e}</tt></td>"
-        + f'<td><img src="{imgpath}" width="500" border="1"/></td></tr>'
+        + f'<td><img src="{imgpath}" /></td></tr>'
     )
 
 
 def CreateReport(mat_dir, files, out_dir):
+    os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
+
     output = (
         "<html><style>"
-        + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges;}\n"
+        + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges; "
+        + f"width: {IMG_WIDTH}; border: 1}}\n"
         + "tt {white-space: pre;}\n"
         + "</style><body><table>"
     )
