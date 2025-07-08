@@ -17,7 +17,8 @@ LIMIT_UMFPACK_COND = 500_000  # Max n to compute condition number using umfpack 
 LIMIT_DENSE_COND = 10_000  # Max n to compute condition number using dense methods
 
 NORMALIZE_TOL = 1e-16
-GREEN_TOL = 1e-16
+GREEN_TOL = 1e-16 # Max abs value to be green
+YELLOW_TOL = 0 # Max abs value to be yellow
 
 SUPPORTED_EXTENSIONS = [".mtx", ".npz"]
 
@@ -52,7 +53,7 @@ def Normalize(x, mx):
         return max(xscale / mxscale, NORMALIZE_TOL)
 
 
-def SaveImage(filepath, pos_array, neg_array, present_array, h, w):
+def SaveImage(filepath, pos_array, neg_array, type_array, h, w):
     pos_max = pos_array.max()
     neg_max = neg_array.max()
 
@@ -65,11 +66,14 @@ def SaveImage(filepath, pos_array, neg_array, present_array, h, w):
             rf = Normalize(posv, pos_max)
             bf = Normalize(negv, neg_max)
 
-            if not present_array[i][j]:
+            if type_array[i][j] == 0:
                 rgb_array[i][j][0] = 1
                 rgb_array[i][j][1] = 1
                 rgb_array[i][j][2] = 1
-            elif posv + negv < GREEN_TOL:
+            elif type_array[i][j] == 1:
+                rgb_array[i][j][0] = 1
+                rgb_array[i][j][1] = 1
+            elif type_array[i][j] == 2:
                 rgb_array[i][j][1] = 1
             else:
                 rgb_array[i][j][0] = rf
@@ -87,7 +91,10 @@ def SaveImagePoints(filepath, mat_coo):
     def PointColor(x):
         ALPHA = 0.2
 
-        if abs(x) < GREEN_TOL:
+        if abs(x) <= YELLOW_TOL:
+            return (1, 1, 0, ALPHA)
+
+        if abs(x) <= GREEN_TOL:
             return (0, 1, 0, ALPHA)
 
         if x > 0:
@@ -119,7 +126,9 @@ def SaveImagePoints(filepath, mat_coo):
 def ExampleLine(out_dir):
     pos_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
     neg_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
-    present_array = np.zeros((MAX_IMAGE, MAX_IMAGE), dtype=bool)
+
+    # 0 is not present, 1 is below YELLOW_TOL, 2 is below GREEN_TOL, 3 is actually present
+    type_array = np.zeros((MAX_IMAGE, MAX_IMAGE), dtype=np.uint8)
 
     for i in range(MAX_IMAGE):
         for j in range(MAX_IMAGE):
@@ -127,14 +136,20 @@ def ExampleLine(out_dir):
             ivalue = 10 ** (40 * i / MAX_IMAGE - 20)
             pos_array[i][j] = jvalue if jvalue > GREEN_TOL else 0
             neg_array[i][j] = ivalue if ivalue > GREEN_TOL else 0
-            present_array[i][j] = True
+
+            if ivalue <= YELLOW_TOL and jvalue <= YELLOW_TOL:
+                type_array[i][j] = 1
+            elif ivalue <= GREEN_TOL and jvalue <= GREEN_TOL:
+                type_array[i][j] = 2
+            else:
+                type_array[i][j] = 3
 
     imgpath = os.path.join(IMAGE_DIR, "example.png")
     SaveImage(
         os.path.join(out_dir, imgpath),
         pos_array,
         neg_array,
-        present_array,
+        type_array,
         MAX_IMAGE,
         MAX_IMAGE,
     )
@@ -190,7 +205,7 @@ def MatrixLine(mat_dir, f, out_dir):
     image_width = min(m, MAX_IMAGE)
     pos_array = np.zeros((image_height, image_width))
     neg_array = np.zeros((image_height, image_width))
-    present_array = np.zeros((image_height, image_width))
+    type_array = np.zeros((image_height, image_width))
 
     for k in range(nnz):
         i = rows[k]
@@ -200,19 +215,23 @@ def MatrixLine(mat_dir, f, out_dir):
         image_i = i * image_height // n
         image_j = j * image_width // m
 
-        present_array[image_i][image_j] = True
-
-        if v > GREEN_TOL:
-            pos_array[image_i][image_j] += v
-        elif v < -GREEN_TOL:
-            neg_array[image_i][image_j] -= v
+        if abs(v) > GREEN_TOL:
+            type_array[image_i][image_j] = 3
+            if v > GREEN_TOL:
+                pos_array[image_i][image_j] += v
+            elif v < -GREEN_TOL:
+                neg_array[image_i][image_j] -= v
+        elif abs(v) > YELLOW_TOL:
+            type_array[image_i][image_j] = max(type_array[image_i][image_j], 2)
+        else:
+            type_array[image_i][image_j] = max(type_array[image_i][image_j], 1)
 
     imgpath_px = os.path.join(IMAGE_DIR, f + "-px.png")
     SaveImage(
         os.path.join(out_dir, imgpath_px),
         pos_array,
         neg_array,
-        present_array,
+        type_array,
         image_height,
         image_width,
     )
