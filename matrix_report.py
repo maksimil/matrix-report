@@ -11,6 +11,7 @@ IMG_WIDTH = 500
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 
+DO_LU = True
 NORMALIZE_TOL = 1e-16
 GREEN_TOL = 1e-16
 
@@ -114,7 +115,7 @@ def MatrixLine(mat_dir, f, out_dir):
         max_neg = max(neg_values)
 
     umfpack_cond = math.nan
-    if n == m:
+    if n == m and DO_LU:
         try:
             lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
             u_diagonal = lu.U.diagonal()
@@ -138,8 +139,8 @@ def MatrixLine(mat_dir, f, out_dir):
         j = cols[k]
         v = vals[k]
 
-        image_i = math.floor(float(i) / n * image_height)
-        image_j = math.floor(float(j) / m * image_width)
+        image_i = i * image_height // n
+        image_j = j * image_width // m
 
         if v > 0:
             pos_array[image_i][image_j] += v
@@ -171,7 +172,7 @@ def CreateReport(mat_dir, files, out_dir):
     output = (
         "<html><style>"
         + "img {image-rendering: pixelated; image-rendering: -moz-crisp-edges; "
-        + f"width: {IMG_WIDTH}; border: 1}}\n"
+        + f"width: {IMG_WIDTH}; border: 1px solid black; }}\n"
         + "tt {white-space: pre;}\n"
         + "</style><body><table>"
     )
@@ -188,19 +189,20 @@ def CreateReport(mat_dir, files, out_dir):
         f.write(output)
 
 
-argvs = list(sys.argv)
+if __name__ == "__main__":
+    argvs = list(sys.argv)
 
-if len(argvs) < 3:
-    print("USAGE: matrix-report [matrix directory] [out directory]")
-    exit(-1)
+    if len(argvs) < 3:
+        print("USAGE: matrix-report [matrix directory] [out directory]")
+        exit(-1)
 
-mat_dir = argvs[1]
-out_dir = argvs[2]
-mat_files = [
-    f
-    for f in os.listdir(mat_dir)
-    if os.path.isfile(os.path.join(mat_dir, f))
-    and os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS
-]
+    mat_dir = argvs[1]
+    out_dir = argvs[2]
+    mat_files = [
+        f
+        for f in os.listdir(mat_dir)
+        if os.path.isfile(os.path.join(mat_dir, f))
+        and os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS
+    ]
 
-CreateReport(mat_dir, mat_files, out_dir)
+    CreateReport(mat_dir, mat_files, out_dir)
