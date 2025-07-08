@@ -12,8 +12,9 @@ IMG_WIDTH = 500
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 
-DO_LU = True
 LIMIT_SCATTER = 100_000  # Max nnz to make the scatter plot
+LIMIT_UMFPACK_COND = 500_000  # Max n to compute condition number using umfpack method
+LIMIT_DENSE_COND = 10_000  # Max n to compute condition number using dense methods
 
 NORMALIZE_TOL = 1e-16
 GREEN_TOL = 1e-16
@@ -34,6 +35,11 @@ def LoadMatrix(path):
         ).tocoo()
 
     return None
+
+
+def ComputeCond(mat_coo):
+    mat_dense = mat_coo.todense()
+    return np.linalg.cond(mat_dense, p=1)
 
 
 def Normalize(x, mx):
@@ -156,7 +162,7 @@ def MatrixLine(mat_dir, f, out_dir):
         max_neg = max(neg_values)
 
     umfpack_cond = math.nan
-    if n == m and DO_LU:
+    if n == m and n <= LIMIT_UMFPACK_COND:
         try:
             lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
             u_diagonal = lu.U.diagonal()
@@ -165,6 +171,10 @@ def MatrixLine(mat_dir, f, out_dir):
             )
         except Exception as e:
             print(e)
+
+    dense_cond = math.nan
+    if n == m and n <= LIMIT_DENSE_COND:
+        dense_cond = ComputeCond(mat_coo)
 
     rows = mat_coo.coords[0]
     cols = mat_coo.coords[1]
@@ -209,7 +219,9 @@ def MatrixLine(mat_dir, f, out_dir):
         + f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
         + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
         + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
-        + f"umfpack_cond = {umfpack_cond:10.4e}</tt></td>"
+        + f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
+        + f"cond (p=1)   = {dense_cond:10.4e}<br/>"
+        + "</tt></td>"
         + f'<td><img class="pixelated" src="{imgpath_px}" /></td>'
         + (f'<td><img src="{imgpath_pts}"</td>' if do_scatter else "")
         + "</tr>"
@@ -218,6 +230,10 @@ def MatrixLine(mat_dir, f, out_dir):
 
 def CreateReport(mat_dir, files, out_dir):
     os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
+
+    print(f"Matrix dir: {mat_dir} ({len(files)} files)")
+    print(f"Output dir: {out_dir}, index file: {os.path.join(out_dir, REPORT_NAME)}")
+    print(f"Max dense matrix is {float(LIMIT_DENSE_COND**2) / float(2**28):.4}Gb")
 
     output = (
         "<html><style>"
@@ -231,8 +247,9 @@ def CreateReport(mat_dir, files, out_dir):
 
     output += ExampleLine(out_dir)
 
-    for f in files:
-        print(f"Processing {f}")
+    for k in range(len(files)):
+        f = files[k]
+        print(f"Processing [{k + 1:3}/{len(files):3}] {f}")
         output += MatrixLine(mat_dir, f, out_dir)
 
     output += "</table></body></html>"
