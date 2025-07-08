@@ -15,7 +15,7 @@ value.
 
 For an example run you can use the command
 ```sh
-python3 matrix-report.py matrices out
+python3 matrix_report.py matrices out
 ```
 `out` is the output directory where the html report and generated images will
 be saved.
