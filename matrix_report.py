@@ -52,7 +52,7 @@ def Normalize(x, mx):
         return max(xscale / mxscale, NORMALIZE_TOL)
 
 
-def SaveImage(filepath, pos_array, neg_array, h, w):
+def SaveImage(filepath, pos_array, neg_array, present_array, h, w):
     pos_max = pos_array.max()
     neg_max = neg_array.max()
 
@@ -65,7 +65,7 @@ def SaveImage(filepath, pos_array, neg_array, h, w):
             rf = Normalize(posv, pos_max)
             bf = Normalize(negv, neg_max)
 
-            if posv + negv == 0:
+            if not present_array[i][j]:
                 rgb_array[i][j][0] = 1
                 rgb_array[i][j][1] = 1
                 rgb_array[i][j][2] = 1
@@ -119,17 +119,22 @@ def SaveImagePoints(filepath, mat_coo):
 def ExampleLine(out_dir):
     pos_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
     neg_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
+    present_array = np.zeros((MAX_IMAGE, MAX_IMAGE), dtype=bool)
 
     for i in range(MAX_IMAGE):
         for j in range(MAX_IMAGE):
-            pos_array[i][j] = 10 ** (40 * j / MAX_IMAGE - 20)
-            neg_array[i][j] = 10 ** (40 * i / MAX_IMAGE - 20)
+            jvalue = 10 ** (40 * j / MAX_IMAGE - 20)
+            ivalue = 10 ** (40 * i / MAX_IMAGE - 20)
+            pos_array[i][j] = jvalue if jvalue > GREEN_TOL else 0
+            neg_array[i][j] = ivalue if ivalue > GREEN_TOL else 0
+            present_array[i][j] = True
 
     imgpath = os.path.join(IMAGE_DIR, "example.png")
     SaveImage(
         os.path.join(out_dir, imgpath),
         pos_array,
         neg_array,
+        present_array,
         MAX_IMAGE,
         MAX_IMAGE,
     )
@@ -161,8 +166,9 @@ def MatrixLine(mat_dir, f, out_dir):
         min_neg = min(neg_values)
         max_neg = max(neg_values)
 
-    umfpack_cond = math.nan
+    umfpack_cond = None
     if n == m and n <= LIMIT_UMFPACK_COND:
+        umfpack_cond = math.nan
         try:
             lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
             u_diagonal = lu.U.diagonal()
@@ -172,7 +178,7 @@ def MatrixLine(mat_dir, f, out_dir):
         except Exception as e:
             print(e)
 
-    dense_cond = math.nan
+    dense_cond = None
     if n == m and n <= LIMIT_DENSE_COND:
         dense_cond = ComputeCond(mat_coo)
 
@@ -184,6 +190,7 @@ def MatrixLine(mat_dir, f, out_dir):
     image_width = min(m, MAX_IMAGE)
     pos_array = np.zeros((image_height, image_width))
     neg_array = np.zeros((image_height, image_width))
+    present_array = np.zeros((image_height, image_width))
 
     for k in range(nnz):
         i = rows[k]
@@ -193,9 +200,11 @@ def MatrixLine(mat_dir, f, out_dir):
         image_i = i * image_height // n
         image_j = j * image_width // m
 
-        if v > 0:
+        present_array[image_i][image_j] = True
+
+        if v > GREEN_TOL:
             pos_array[image_i][image_j] += v
-        else:
+        elif v < -GREEN_TOL:
             neg_array[image_i][image_j] -= v
 
     imgpath_px = os.path.join(IMAGE_DIR, f + "-px.png")
@@ -203,6 +212,7 @@ def MatrixLine(mat_dir, f, out_dir):
         os.path.join(out_dir, imgpath_px),
         pos_array,
         neg_array,
+        present_array,
         image_height,
         image_width,
     )
@@ -219,8 +229,16 @@ def MatrixLine(mat_dir, f, out_dir):
         + f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
         + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
         + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
-        + f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
-        + f"cond (p=1)   = {dense_cond:10.4e}<br/>"
+        + (
+            f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
+            if umfpack_cond is not None
+            else "umfpack_cond = skipped<br/>"
+        )
+        + (
+            f"cond (p=1)   = {dense_cond:10.4e}<br/>"
+            if dense_cond is not None
+            else "cond (p=1)   = skipped<br/>"
+        )
         + "</tt></td>"
         + f'<td><img class="pixelated" src="{imgpath_px}" /></td>'
         + (f'<td><img src="{imgpath_pts}"</td>' if do_scatter else "")
