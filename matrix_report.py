@@ -17,8 +17,8 @@ LIMIT_UMFPACK_COND = 500_000  # Max n to compute condition number using umfpack 
 LIMIT_DENSE_COND = 10_000  # Max n to compute condition number using dense methods
 
 NORMALIZE_TOL = 1e-16
-GREEN_TOL = 1e-16 # Max abs value to be green
-YELLOW_TOL = 0 # Max abs value to be yellow
+GREEN_TOL = 1e-16  # Max abs value to be green
+YELLOW_TOL = 0  # Max abs value to be yellow
 
 SUPPORTED_EXTENSIONS = [".mtx", ".npz"]
 
@@ -85,6 +85,8 @@ def SaveImage(filepath, pos_array, neg_array, type_array, h, w):
 def SaveImagePoints(filepath, mat_coo):
     fig, ax = plt.subplots(figsize=(8, 8))
 
+    n, m = mat_coo.shape
+
     pos_max = mat_coo.max()
     neg_max = mat_coo.min()
 
@@ -117,6 +119,9 @@ def SaveImagePoints(filepath, mat_coo):
     )
 
     ax.grid()
+    MARGIN_EPS = 0.01
+    ax.set_xlim([-MARGIN_EPS * (m - 1), (1 + MARGIN_EPS) * (m - 1)])
+    ax.set_ylim([-MARGIN_EPS * (n - 1), (1 + MARGIN_EPS) * (n - 1)])
     ax.invert_yaxis()
     fig.tight_layout()
     fig.savefig(filepath, dpi=200, bbox_inches="tight")
