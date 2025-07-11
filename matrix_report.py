@@ -12,9 +12,12 @@ IMG_WIDTH = 500
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 
+MARGIN_EPS = 0.01
+
 LIMIT_SCATTER = 100_000  # Max nnz to make the scatter plot
 LIMIT_UMFPACK_COND = 500_000  # Max n to compute condition number using umfpack method
-LIMIT_DENSE_COND = 10_000  # Max n to compute condition number using dense methods
+LIMIT_SINGULAR = 10_000  # Max n to compute condition number using dense methods
+LIMIT_EIGEN = 5_000  # Max n to compute eigenvalues (uses dense methods)
 
 NORMALIZE_TOL = 1e-16
 GREEN_TOL = 1e-16  # Max abs value to be green
@@ -119,13 +122,31 @@ def SaveImagePoints(filepath, mat_coo):
     )
 
     ax.grid()
-    MARGIN_EPS = 0.01
     ax.set_xlim([-MARGIN_EPS * (m - 1), (1 + MARGIN_EPS) * (m - 1)])
     ax.set_ylim([-MARGIN_EPS * (n - 1), (1 + MARGIN_EPS) * (n - 1)])
     ax.invert_yaxis()
     fig.tight_layout()
     fig.savefig(filepath, dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+
+def SaveImageEigen(filepath, mat_coo):
+    mat_dense = mat_coo.todense()
+    vs = scipy.linalg.eigvals(mat_dense)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    reals = [x.real for x in vs]
+    imags = [x.imag for x in vs]
+    ax.plot(reals, imags, "k.")
+
+    ax.grid()
+
+    fig.tight_layout()
+    fig.savefig(filepath, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    return vs
 
 
 def ExampleLine(out_dir):
@@ -195,9 +216,15 @@ def MatrixLine(name, mat_coo, out_dir):
         except Exception as e:
             print(e)
 
+    do_singular = n <= LIMIT_SINGULAR
     dense_cond = None
-    if n == m and n <= LIMIT_DENSE_COND:
-        dense_cond = ComputeCond(mat_coo)
+    min_singular = None
+    max_singular = None
+    if do_singular:
+        sings = scipy.linalg.svd(mat_coo.todense(), compute_uv=False)
+        min_singular = min(sings)
+        max_singular = max(sings)
+        dense_cond = max_singular / min_singular
 
     rows = mat_coo.coords[0]
     cols = mat_coo.coords[1]
@@ -244,6 +271,25 @@ def MatrixLine(name, mat_coo, out_dir):
         imgpath_pts = os.path.join(IMAGE_DIR, name + "-pts.png")
         SaveImagePoints(os.path.join(out_dir, imgpath_pts), mat_coo)
 
+    do_eigen = n <= LIMIT_EIGEN
+    min_real = None
+    max_real = None
+    min_imag = None
+    max_imag = None
+    min_abs = None
+    max_abs = None
+    n_real = None
+    if do_eigen:
+        imgpath_eigen = os.path.join(IMAGE_DIR, name + "-eigen.png")
+        vs = SaveImageEigen(os.path.join(out_dir, imgpath_eigen), mat_coo)
+        min_real = min(x.real for x in vs)
+        max_real = max(x.real for x in vs)
+        min_imag = min(x.imag for x in vs)
+        max_imag = max(x.imag for x in vs)
+        min_abs = min(abs(x) for x in vs)
+        max_abs = max(abs(x) for x in vs)
+        n_real = len([0 for x in vs if abs(x.imag) < 1e-16])
+
     return (
         "<tr>"
         + f"<td><tt><b>{name}</b><br/>"
@@ -251,18 +297,31 @@ def MatrixLine(name, mat_coo, out_dir):
         + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
         + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
         + (
-            f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
+            "<br/>" + f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
             if umfpack_cond is not None
-            else "umfpack_cond = skipped<br/>"
+            else ""
         )
         + (
-            f"cond (p=1)   = {dense_cond:10.4e}<br/>"
-            if dense_cond is not None
-            else "cond (p=1)   = skipped<br/>"
+            "<br/>"
+            + f"cond (p=2) = {dense_cond:11.4e}<br/>"
+            + f"sing range = ({min_singular:11.4e}, {max_singular:11.4e})<br/>"
+            + f"max(sing)  = {max_singular:10.4e}<br/>"
+            if do_singular
+            else ""
+        )
+        + (
+            "<br/>"
+            + f"Re(l) range = ({min_real:11.4e}, {max_real:11.4e})<br/>"
+            + f"Im(l) range = ({min_imag:11.4e}, {max_imag:11.4e})<br/>"
+            + f"|l|   range = ({min_abs:11.4e}, {max_abs:11.4e})<br/>"
+            + f"n of real l = {n_real}<br/>"
+            if do_eigen
+            else ""
         )
         + "</tt></td>"
         + f'<td><img class="pixelated" src="{imgpath_px}" /></td>'
         + (f'<td><img src="{imgpath_pts}"</td>' if do_scatter else "")
+        + (f'<td><img src="{imgpath_eigen}"</td>' if do_eigen else "")
         + "</tr>"
     )
 
@@ -271,7 +330,8 @@ def CreateReport(names, mts, out_dir):
     os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
 
     print(f"Output dir: {out_dir}, index file: {os.path.join(out_dir, REPORT_NAME)}")
-    print(f"Max dense matrix is {float(LIMIT_DENSE_COND**2) / float(2**28):.4}Gb")
+    max_dense_gb = float(max(LIMIT_SINGULAR, LIMIT_EIGEN) ** 2) / float(2**28)
+    print(f"Max dense matrix is {max_dense_gb:.4}Gb")
 
     output = (
         "<html><style>"
