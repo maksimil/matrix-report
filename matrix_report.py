@@ -168,10 +168,7 @@ def ExampleLine(out_dir):
     )
 
 
-def MatrixLine(mat_dir, f, out_dir):
-    mat_path = os.path.join(mat_dir, f)
-    mat_coo = LoadMatrix(mat_path)
-
+def MatrixLine(name, mat_coo, out_dir):
     n, m = mat_coo.shape
     nnz = mat_coo.getnnz()
     sparsity = float(nnz) / (n * m) * 100
@@ -231,7 +228,7 @@ def MatrixLine(mat_dir, f, out_dir):
         else:
             type_array[image_i][image_j] = max(type_array[image_i][image_j], 1)
 
-    imgpath_px = os.path.join(IMAGE_DIR, f + "-px.png")
+    imgpath_px = os.path.join(IMAGE_DIR, name + "-px.png")
     SaveImage(
         os.path.join(out_dir, imgpath_px),
         pos_array,
@@ -244,12 +241,12 @@ def MatrixLine(mat_dir, f, out_dir):
     do_scatter = nnz <= LIMIT_SCATTER
 
     if do_scatter:
-        imgpath_pts = os.path.join(IMAGE_DIR, f + "-pts.png")
+        imgpath_pts = os.path.join(IMAGE_DIR, name + "-pts.png")
         SaveImagePoints(os.path.join(out_dir, imgpath_pts), mat_coo)
 
     return (
         "<tr>"
-        + f"<td><tt><b>{f}</b><br/>"
+        + f"<td><tt><b>{name}</b><br/>"
         + f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
         + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
         + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
@@ -270,10 +267,9 @@ def MatrixLine(mat_dir, f, out_dir):
     )
 
 
-def CreateReport(mat_dir, files, out_dir):
+def CreateReport(names, mts, out_dir):
     os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
 
-    print(f"Matrix dir: {mat_dir} ({len(files)} files)")
     print(f"Output dir: {out_dir}, index file: {os.path.join(out_dir, REPORT_NAME)}")
     print(f"Max dense matrix is {float(LIMIT_DENSE_COND**2) / float(2**28):.4}Gb")
 
@@ -289,10 +285,11 @@ def CreateReport(mat_dir, files, out_dir):
 
     output += ExampleLine(out_dir)
 
-    for k in range(len(files)):
-        f = files[k]
-        print(f"Processing [{k + 1:3}/{len(files):3}] {f}")
-        output += MatrixLine(mat_dir, f, out_dir)
+    for k in range(len(names)):
+        name = names[k]
+        mat_coo = mts[k]
+        print(f"Processing [{k + 1:3}/{len(names):3}] {name}")
+        output += MatrixLine(name, mat_coo, out_dir)
 
     output += "</table></body></html>"
 
@@ -316,4 +313,6 @@ if __name__ == "__main__":
         and os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS
     ]
 
-    CreateReport(mat_dir, mat_files, out_dir)
+    names = mat_files
+    mats = [LoadMatrix(os.path.join(mat_dir, f)) for f in mat_files]
+    CreateReport(names, mats, out_dir)
