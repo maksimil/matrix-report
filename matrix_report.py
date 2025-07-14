@@ -134,11 +134,26 @@ def SaveImageEigen(filepath, mat_coo):
     mat_dense = mat_coo.todense()
     vs = scipy.linalg.eigvals(mat_dense)
 
+    values = []
+
+    for x in vs:
+        multiple = False
+        for k in range(len(values)):
+            if abs(x - values[k][0]) < 1e-16:
+                values[k][1] += 1
+                multiple = True
+                break
+        if not multiple:
+            values.append([x, 1])
+
+    max_mult = max(x[1] for x in values)
+
     fig, ax = plt.subplots(figsize=(8, 8))
 
-    reals = [x.real for x in vs]
-    imags = [x.imag for x in vs]
-    ax.plot(reals, imags, "k.")
+    reals = [x[0].real for x in values]
+    imags = [x[0].imag for x in values]
+    colors = [(x[1] / max_mult, 0, 1, 0.5) for x in values]
+    ax.scatter(reals, imags, color=colors)
 
     ax.grid()
 
@@ -146,7 +161,7 @@ def SaveImageEigen(filepath, mat_coo):
     fig.savefig(filepath, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
-    return vs
+    return vs, max_mult
 
 
 def ExampleLine(out_dir):
@@ -279,9 +294,10 @@ def MatrixLine(name, mat_coo, out_dir):
     min_abs = None
     max_abs = None
     n_real = None
+    max_mult = None
     if do_eigen:
         imgpath_eigen = os.path.join(IMAGE_DIR, name + "-eigen.png")
-        vs = SaveImageEigen(os.path.join(out_dir, imgpath_eigen), mat_coo)
+        vs, max_mult = SaveImageEigen(os.path.join(out_dir, imgpath_eigen), mat_coo)
         min_real = min(x.real for x in vs)
         max_real = max(x.real for x in vs)
         min_imag = min(x.imag for x in vs)
@@ -315,6 +331,7 @@ def MatrixLine(name, mat_coo, out_dir):
             + f"Im(l) range = ({min_imag:11.4e}, {max_imag:11.4e})<br/>"
             + f"|l|   range = ({min_abs:11.4e}, {max_abs:11.4e})<br/>"
             + f"n of real l = {n_real}<br/>"
+            + f"max mult    = {max_mult}<br/>"
             if do_eigen
             else ""
         )
