@@ -5,354 +5,296 @@ import scipy
 from matplotlib import pyplot as plt
 import math
 import random
-
-MAX_IMAGE = 256
-IMG_WIDTH = 500
+from dataclasses import dataclass
+from types import NoneType
+from typing import Literal
+from collections.abc import Callable
 
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 
-MARGIN_EPS = 0.01
-
-LIMIT_SCATTER = 100_000  # Max nnz to make the scatter plot
-LIMIT_UMFPACK_COND = 500_000  # Max n to compute condition number using umfpack method
-LIMIT_SINGULAR = 10_000  # Max n to compute condition number using dense methods
-LIMIT_EIGEN = 5_000  # Max n to compute eigenvalues (uses dense methods)
-
-NORMALIZE_TOL = 1e-16
-GREEN_TOL = 1e-16  # Max abs value to be green
-YELLOW_TOL = 0  # Max abs value to be yellow
-
-SUPPORTED_EXTENSIONS = [".mtx", ".npz"]
+CSRMatrix = scipy.sparse.csr_matrix
 
 
-def LoadMatrix(path):
-    if path.endswith(".mtx"):
-        return scipy.io.mmread(path)
+@dataclass
+class NamedCSRMatrix:
+    name: str
+    matrix: CSRMatrix
 
-    if path.endswith(".npz"):
-        data = np.load(path)
-        nr = int(data["nrows"][0])
-        nc = int(data["ncols"][0])
-        return scipy.sparse.csr_matrix(
-            (data["values"], data["col_indices"], data["row_ptr"]), shape=(nr, nc)
-        ).tocoo()
+
+@dataclass
+class NamedMatrixPath:
+    name: str
+    path: str
+
+
+MatrixDescType = CSRMatrix | str | NamedCSRMatrix | NamedMatrixPath
+MatrixLoader = Callable[[], MatrixDescType]
+
+
+@dataclass
+class ShadeParams:
+    enabled: bool = True
+    pxRows: int = -1  # scale to ratio
+    pxCols: int = 256
+    scale: Literal["log", "linear"] = "linear"
+
+    def Disabled():
+        return ShadeParams(enabled=False)
+
+
+@dataclass
+class ColormapParams:
+    enabled: bool = True
+    scale: Literal["log", "linear"] = "log"
+    zeroTol: float = 0
+    minColor: float = 1e-16
+    maxColor: float = 1e20
+
+    def Disabled():
+        return ColormapParams(enabled=False)
+
+
+def ScaleValue(colormap: ColormapParams, v: float):
+    scale = colormap.scale
+    minv = colormap.minColor
+    maxv = colormap.maxColor
+
+    if scale == "log":
+        vscaled = math.log10(v / minv + 1)
+        mscaled = math.log10(maxv / minv + 1)
+        return min(vscaled / mscaled, 1)
+
+    if scale == "linear":
+        vscaled = (v - minv) / (maxv - minv)
+        return np.clip(vscaled, 0, 1)
 
     return None
 
 
-def ComputeCond(mat_coo):
-    mat_dense = mat_coo.todense()
-    return np.linalg.cond(mat_dense, p=1)
+def GetValuesColor(values: list[float] | float, colormap: ColormapParams):
+    if type(values) is float:
+        values = [values]
+
+    pos = [v for v in values if v > 0]
+    neg = [v for v in values if v < 0]
+
+    if colormap.zeroTol == 0 and len(pos) + len(neg) == 0:
+        return (1, 1, 0)  # yellow
+
+    posAvg = sum(pos) / len(pos)
+    negAvg = sum(neg) / len(neg)
+
+    if posAvg < colormap.minColor and -negAvg < colormap.minColor:
+        return (0, 1, 0)  # green
+
+    red = ScaleValue(colormap, posAvg)
+    blu = ScaleValue(colormap, negAvg)
+
+    return (red, 0, blu)
 
 
-def Normalize(x, mx):
-    xscale = math.log10(x / NORMALIZE_TOL + 1)
-    mxscale = math.log10(mx / NORMALIZE_TOL + 1)
+@dataclass
+class ColorParams:
+    enabled: bool = True
+    pxRows: int = -1
+    pxCols: int = 256
+    colorMap: ColormapParams = ColormapParams()
 
-    if mxscale == 0:
-        return 0
-    else:
-        return max(xscale / mxscale, NORMALIZE_TOL)
-
-
-def SaveImage(filepath, pos_array, neg_array, type_array, h, w):
-    pos_max = pos_array.max()
-    neg_max = neg_array.max()
-
-    rgb_array = np.zeros((h, w, 3))
-
-    for i in range(h):
-        for j in range(w):
-            posv = pos_array[i][j]
-            negv = neg_array[i][j]
-            rf = Normalize(posv, pos_max)
-            bf = Normalize(negv, neg_max)
-
-            if type_array[i][j] == 0:
-                rgb_array[i][j][0] = 1
-                rgb_array[i][j][1] = 1
-                rgb_array[i][j][2] = 1
-            elif type_array[i][j] == 1:
-                rgb_array[i][j][0] = 1
-                rgb_array[i][j][1] = 1
-            elif type_array[i][j] == 2:
-                rgb_array[i][j][1] = 1
-            else:
-                rgb_array[i][j][0] = rf
-                rgb_array[i][j][2] = bf
-
-    plt.imsave(filepath, rgb_array)
+    def Disabled():
+        return ColorParams(enabled=False)
 
 
-def SaveImagePoints(filepath, mat_coo):
-    fig, ax = plt.subplots(figsize=(8, 8))
+@dataclass
+class ReportParams:
+    matrix: MatrixDescType | MatrixLoader
+    name: str | None = None
 
-    n, m = mat_coo.shape
+    colorParams: ColorParams | NoneType = None
+    shadeParams: ShadeParams | NoneType = None
+    scatterParams: ColormapParams | NoneType = None
 
-    pos_max = mat_coo.max()
-    neg_max = mat_coo.min()
-
-    def PointColor(x):
-        ALPHA = 0.2
-
-        if abs(x) <= YELLOW_TOL:
-            return (1, 1, 0, ALPHA)
-
-        if abs(x) <= GREEN_TOL:
-            return (0, 1, 0, ALPHA)
-
-        if x > 0:
-            return (Normalize(x, pos_max), 0, 0, ALPHA)
-        else:
-            return (0, 0, Normalize(-x, -neg_max), ALPHA)
-
-    indices = list(range(mat_coo.getnnz()))
-    random.shuffle(indices)
-
-    rows = [mat_coo.coords[0][k] for k in indices]
-    cols = [mat_coo.coords[1][k] for k in indices]
-    vals = [mat_coo.data[k] for k in indices]
-
-    ax.scatter(
-        cols,
-        rows,
-        10,
-        color=[PointColor(x) for x in vals],
-    )
-
-    ax.grid()
-    ax.set_xlim([-MARGIN_EPS * (m - 1), (1 + MARGIN_EPS) * (m - 1)])
-    ax.set_ylim([-MARGIN_EPS * (n - 1), (1 + MARGIN_EPS) * (n - 1)])
-    ax.invert_yaxis()
-    fig.tight_layout()
-    fig.savefig(filepath, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+    computeSingular: bool | NoneType = None
+    computeSpectrum: bool | NoneType = None
+    computeCond: float | NoneType = None
+    luCond: bool | NoneType = None
+    enableFFT: bool | NoneType = None
 
 
-def SaveImageEigen(filepath, mat_coo):
-    mat_dense = mat_coo.todense()
-    vs = scipy.linalg.eigvals(mat_dense)
-
-    values = []
-
-    for x in vs:
-        multiple = False
-        for k in range(len(values)):
-            if abs(x - values[k][0]) < 1e-16:
-                values[k][1] += 1
-                multiple = True
-                break
-        if not multiple:
-            values.append([x, 1])
-
-    max_mult = max(x[1] for x in values)
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-
-    reals = [x[0].real for x in values]
-    imags = [x[0].imag for x in values]
-    colors = [(x[1] / max_mult, 0, 1, 0.5) for x in values]
-    ax.scatter(reals, imags, color=colors)
-
-    ax.grid()
-
-    fig.tight_layout()
-    fig.savefig(filepath, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-    return vs, max_mult
+INT_MAX = sys.maxsize
 
 
-def ExampleLine(out_dir):
-    pos_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
-    neg_array = np.zeros((MAX_IMAGE, MAX_IMAGE))
+@dataclass
+class MatrixLimit:
+    maxM: int = INT_MAX
+    maxN: int = INT_MAX
+    maxNNZ: int = INT_MAX
 
-    # 0 is not present, 1 is below YELLOW_TOL, 2 is below GREEN_TOL, 3 is actually present
-    type_array = np.zeros((MAX_IMAGE, MAX_IMAGE), dtype=np.uint8)
+    def Square(n: int = INT_MAX, nnz: int = INT_MAX):
+        return MatrixLimit(maxM=n, maxN=n, maxNNZ=nnz)
 
-    for i in range(MAX_IMAGE):
-        for j in range(MAX_IMAGE):
-            jvalue = 10 ** (40 * j / MAX_IMAGE - 20)
-            ivalue = 10 ** (40 * i / MAX_IMAGE - 20)
-            pos_array[i][j] = jvalue if jvalue > GREEN_TOL else 0
-            neg_array[i][j] = ivalue if ivalue > GREEN_TOL else 0
+    def Disabled():
+        return MatrixLimit(maxNNZ=-1)
 
-            if ivalue <= YELLOW_TOL and jvalue <= YELLOW_TOL:
-                type_array[i][j] = 1
-            elif ivalue <= GREEN_TOL and jvalue <= GREEN_TOL:
-                type_array[i][j] = 2
-            else:
-                type_array[i][j] = 3
+    def IsWithin(self, matrix: CSRMatrix):
+        n, m = matrix.shape
+        nnz = matrix.getnnz()
 
-    imgpath = os.path.join(IMAGE_DIR, "example.png")
-    SaveImage(
-        os.path.join(out_dir, imgpath),
-        pos_array,
-        neg_array,
-        type_array,
-        MAX_IMAGE,
-        MAX_IMAGE,
-    )
-
-    return (
-        '<tr class="page-break"><td><tt><b>Color example</b><br/>'
-        + "range 10^-20 - 10^20<br/>"
-        + f"green is < {GREEN_TOL:7.1e}<br/>"
-        + f"images are {MAX_IMAGE}x{MAX_IMAGE} pixels</tt></td>"
-        + f'<td><img class="pixelated" src="{imgpath}" /></td></tr>'
-    )
+        return n <= self.maxN and m <= self.maxM and nnz <= self.maxNNZ
 
 
-def MatrixLine(name, mat_coo, out_dir):
-    n, m = mat_coo.shape
-    nnz = mat_coo.getnnz()
-    sparsity = float(nnz) / (n * m) * 100
+@dataclass
+class DefaultChoiceParams:
+    defaultColorParams: ColorParams = ColorParams()
+    limitColor: MatrixLimit = MatrixLimit()
 
-    pos_values = list(x for x in mat_coo.data if x > 0)
-    neg_values = list(x for x in mat_coo.data if x < 0)
-    min_pos, max_pos, min_neg, max_neg = math.nan, math.nan, math.nan, math.nan
-    if len(pos_values) > 0:
-        min_pos = min(pos_values)
-        max_pos = max(pos_values)
-    if len(neg_values) > 0:
-        min_neg = min(neg_values)
-        max_neg = max(neg_values)
+    defaultShadeParams: ShadeParams = ShadeParams()
+    limitShade: MatrixLimit = MatrixLimit()
 
-    umfpack_cond = None
-    if n == m and n <= LIMIT_UMFPACK_COND:
-        umfpack_cond = math.nan
-        try:
-            lu = scipy.sparse.linalg.splu(mat_coo.tocsc())
-            u_diagonal = lu.U.diagonal()
-            umfpack_cond = max(abs(x) for x in u_diagonal) / min(
-                abs(x) for x in u_diagonal
+    defaultScatterParams: ColormapParams = ColormapParams()
+    limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
+
+    limitSingular: MatrixLimit = MatrixLimit.Square(n=10_000)
+
+    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
+
+    defaultCondTol: float = 1e-4
+    limitCond: MatrixLimit = MatrixLimit(maxNNZ=100_000)
+
+    limitLuCond: MatrixLimit = MatrixLimit.Disabled()
+
+    limitFFT: MatrixLimit = MatrixLimit.Square(100_000)
+
+
+def LoadMatrix(loader: MatrixDescType | MatrixLoader):
+    if callable(loader):
+        return LoadMatrix(loader())
+
+    if type(loader) is NamedMatrixPath:
+        path = loader.path
+        name = loader.name
+
+        mat = None
+
+        if path.endswith(".mtx"):
+            mat = scipy.io.mmread(path).tocsr()
+
+        if path.endswith(".npz"):
+            data = np.load(path)
+            m = int(data["nrows"][0])
+            n = int(data["ncols"][0])
+            mat = CSRMatrix(
+                (data["values"], data["col_indices"], data["row_ptr"]),
+                shape=(m, n),
             )
-        except Exception as e:
-            print(e)
 
-    do_singular = n <= LIMIT_SINGULAR
-    dense_cond = None
-    min_singular = None
-    max_singular = None
-    if do_singular:
-        sings = scipy.linalg.svd(mat_coo.todense(), compute_uv=False)
-        min_singular = min(sings)
-        max_singular = max(sings)
-        dense_cond = max_singular / min_singular
+        return LoadMatrix(NamedCSRMatrix(matrix=mat, name=name))
 
-    rows = mat_coo.coords[0]
-    cols = mat_coo.coords[1]
-    vals = mat_coo.data
+    if type(loader) is str:
+        return LoadMatrix(NamedMatrixPath(path=loader, name=loader))
 
-    image_height = min(n, MAX_IMAGE)
-    image_width = min(m, MAX_IMAGE)
-    pos_array = np.zeros((image_height, image_width))
-    neg_array = np.zeros((image_height, image_width))
-    type_array = np.zeros((image_height, image_width))
+    if type(loader) is CSRMatrix:
+        return LoadMatrix(NamedCSRMatrix(matrix=loader, name=""))
 
-    for k in range(nnz):
-        i = rows[k]
-        j = cols[k]
-        v = vals[k]
+    if type(loader) is NamedCSRMatrix:
+        return loader
 
-        image_i = i * image_height // n
-        image_j = j * image_width // m
+    return None
 
-        if abs(v) > GREEN_TOL:
-            type_array[image_i][image_j] = 3
-            if v > GREEN_TOL:
-                pos_array[image_i][image_j] += v
-            elif v < -GREEN_TOL:
-                neg_array[image_i][image_j] -= v
-        elif abs(v) > YELLOW_TOL:
-            type_array[image_i][image_j] = max(type_array[image_i][image_j], 2)
+
+def FillDefaultParams(
+    params: ReportParams,
+    matrix: CSRMatrix,
+    retName: str | None,
+    i: int,
+    defaultChoice: DefaultChoiceParams,
+):
+    if params.name is None:
+        if retName == "":
+            params.name = f"Matrix {i}"
         else:
-            type_array[image_i][image_j] = max(type_array[image_i][image_j], 1)
+            params.name = retName
 
-    imgpath_px = os.path.join(IMAGE_DIR, name + "-px.png")
-    SaveImage(
-        os.path.join(out_dir, imgpath_px),
-        pos_array,
-        neg_array,
-        type_array,
-        image_height,
-        image_width,
+    if params.colorParams is None:
+        if defaultChoice.limitColor.IsWithin(matrix):
+            params.colorParams = defaultChoice.defaultColorParams
+        else:
+            params.colorParams = ColorParams.Disabled()
+
+    if params.shadeParams is None:
+        if defaultChoice.limitShade.IsWithin(matrix):
+            params.shadeParams = defaultChoice.defaultShadeParams
+        else:
+            params.shadeParams = ShadeParams.Disabled()
+
+    if params.scatterParams is None:
+        if defaultChoice.limitScatter.IsWithin(matrix):
+            params.scatterParams = defaultChoice.defaultScatterParams
+        else:
+            params.scatterParams = ColormapParams.Disabled()
+
+    if params.computeSingular is None:
+        params.computeSingular = defaultChoice.limitSingular.IsWithin(matrix)
+
+    if params.computeSpectrum is None:
+        params.computeSpectrum = defaultChoice.limitSpectrum.IsWithin(matrix)
+
+    if params.computeCond is None:
+        if defaultChoice.limitCond.IsWithin(matrix):
+            params.computeCond = defaultChoice.defaultCondTol
+        else:
+            params.computeCond = -1.0
+
+    if params.luCond is None:
+        params.luCond = defaultChoice.limitLuCond.IsWithin(matrix)
+
+    if params.enableFFT is None:
+        params.enableFFT = defaultChoice.limitFFT.IsWithin(matrix)
+
+    return params
+
+
+def CreateLine(matrix: CSRMatrix, params: list[ReportParams], outDir: str):
+    # --- Basic info ---
+    m, n = matrix.shape
+    nnz = matrix.getnnz()
+    sparsity = nnz / (n * m) * 100
+
+    posArr = matrix.data[matrix.data > 0]
+    negArr = matrix.data[matrix.data < 0]
+    minPos, maxPos, minNeg, maxNeg = math.nan, math.nan, math.nan, math.nan
+    if len(posArr) > 0:
+        minPos = posArr.min()
+        maxPos = posArr.max()
+    if len(negArr) > 0:
+        minNeg = negArr.min()
+        maxNeg = negArr.max()
+
+    dataCell = (
+        f"<tt><b>{params.name}</b><br/>"
+        + f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
+        + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
+        + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
     )
+    figCells = ""
 
-    do_scatter = nnz <= LIMIT_SCATTER
+    dataCell += "</tt>"
 
-    if do_scatter:
-        imgpath_pts = os.path.join(IMAGE_DIR, name + "-pts.png")
-        SaveImagePoints(os.path.join(out_dir, imgpath_pts), mat_coo)
-
-    do_eigen = n <= LIMIT_EIGEN
-    min_real = None
-    max_real = None
-    min_imag = None
-    max_imag = None
-    min_abs = None
-    max_abs = None
-    n_real = None
-    max_mult = None
-    if do_eigen:
-        imgpath_eigen = os.path.join(IMAGE_DIR, name + "-eigen.png")
-        vs, max_mult = SaveImageEigen(os.path.join(out_dir, imgpath_eigen), mat_coo)
-        min_real = min(x.real for x in vs)
-        max_real = max(x.real for x in vs)
-        min_imag = min(x.imag for x in vs)
-        max_imag = max(x.imag for x in vs)
-        min_abs = min(abs(x) for x in vs)
-        max_abs = max(abs(x) for x in vs)
-        n_real = len([0 for x in vs if abs(x.imag) < 1e-16])
-
-    return (
-        "<tr>"
-        + f"<td><tt><b>{name}</b><br/>"
-        + f"{n} x {m}, nnz = {nnz} ({sparsity:8.4f}% )<br/>"
-        + f"pos range = ({min_pos:11.4e}, {max_pos:11.4e})<br/>"
-        + f"neg range = ({min_neg:11.4e}, {max_neg:11.4e})<br/>"
-        + (
-            "<br/>" + f"umfpack_cond = {umfpack_cond:10.4e}<br/>"
-            if umfpack_cond is not None
-            else ""
-        )
-        + (
-            "<br/>"
-            + f"cond (p=2) = {dense_cond:11.4e}<br/>"
-            + f"sing range = ({min_singular:11.4e}, {max_singular:11.4e})<br/>"
-            + f"max(sing)  = {max_singular:10.4e}<br/>"
-            if do_singular
-            else ""
-        )
-        + (
-            "<br/>"
-            + f"Re(l) range = ({min_real:11.4e}, {max_real:11.4e})<br/>"
-            + f"Im(l) range = ({min_imag:11.4e}, {max_imag:11.4e})<br/>"
-            + f"|l|   range = ({min_abs:11.4e}, {max_abs:11.4e})<br/>"
-            + f"n of real l = {n_real}<br/>"
-            + f"max mult    = {max_mult}<br/>"
-            if do_eigen
-            else ""
-        )
-        + "</tt></td>"
-        + f'<td><img class="pixelated" src="{imgpath_px}" /></td>'
-        + (f'<td><img src="{imgpath_pts}"</td>' if do_scatter else "")
-        + (f'<td><img src="{imgpath_eigen}"</td>' if do_eigen else "")
-        + "</tr>"
-    )
+    return f"<tr><td>{dataCell}</td>{figCells}</tr>"
 
 
-def CreateReport(names, mts, out_dir):
-    os.makedirs(os.path.join(out_dir, IMAGE_DIR), exist_ok=True)
+def CreateReport(
+    matrices: list[ReportParams],
+    outDir: str,
+    defaultChoiceParams: DefaultChoiceParams = DefaultChoiceParams(),
+):
+    os.makedirs(os.path.join(outDir, IMAGE_DIR), exist_ok=True)
 
-    print(f"Output dir: {out_dir}, index file: {os.path.join(out_dir, REPORT_NAME)}")
-    max_dense_gb = float(max(LIMIT_SINGULAR, LIMIT_EIGEN) ** 2) / float(2**28)
-    print(f"Max dense matrix is {max_dense_gb:.4}Gb")
+    print(f"Output dir: {outDir}, index file: {os.path.join(outDir, REPORT_NAME)}")
 
     output = (
         "<html><style>"
-        + f"img {{ width: {IMG_WIDTH}; border: 1px solid black; }}\n"
+        + "img {{ width: 500; border: 1px solid black; }}\n"
         + ".pixelated { image-rendering: pixelated; "
         + "image-rendering: -moz-crisp-edges; }\n"
         + "tt {white-space: pre;}\n"
@@ -360,19 +302,37 @@ def CreateReport(names, mts, out_dir):
         + "</style><body><table>"
     )
 
-    output += ExampleLine(out_dir)
+    nmats = len(matrices)
+    for i in range(nmats):
+        params = matrices[i]
+        matrixData = LoadMatrix(params.matrix)
+        if matrixData is None:
+            print(f"[{i + 1}/{nmats}] Matrix {i} with params {params} not loaded")
+            continue
 
-    for k in range(len(names)):
-        name = names[k]
-        mat_coo = mts[k]
-        print(f"Processing [{k + 1:3}/{len(names):3}] {name}")
-        output += MatrixLine(name, mat_coo, out_dir)
+        params = FillDefaultParams(
+            params,
+            matrixData.matrix,
+            matrixData.name,
+            i,
+            defaultChoiceParams,
+        )
+        print(
+            f"[{i + 1}/{nmats}] {params.name} "
+            f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[0]}"
+        )
+
+        line = CreateLine(matrixData.matrix, params, outDir)
+
+        output += line
 
     output += "</table></body></html>"
 
-    with open(os.path.join(out_dir, REPORT_NAME), "w") as f:
+    with open(os.path.join(outDir, REPORT_NAME), "w") as f:
         f.write(output)
 
+
+__all__ = ["CreateReport"]
 
 if __name__ == "__main__":
     argvs = list(sys.argv)
@@ -381,15 +341,18 @@ if __name__ == "__main__":
         print("USAGE: matrix-report [matrix directory] [out directory]")
         exit(-1)
 
-    mat_dir = argvs[1]
-    out_dir = argvs[2]
-    mat_files = [
+    matDir = argvs[1]
+    outDir = argvs[2]
+    matFnames = [
         f
-        for f in os.listdir(mat_dir)
-        if os.path.isfile(os.path.join(mat_dir, f))
-        and os.path.splitext(f)[1] in SUPPORTED_EXTENSIONS
+        for f in os.listdir(matDir)
+        if os.path.isfile(os.path.join(matDir, f))
+        and os.path.splitext(f)[1] in [".mtx", ".npz"]
     ]
 
-    names = mat_files
-    mats = [LoadMatrix(os.path.join(mat_dir, f)) for f in mat_files]
-    CreateReport(names, mats, out_dir)
+    CreateReport(
+        matrices=[
+            ReportParams(matrix=os.path.join(matDir, f), name=f) for f in matFnames
+        ],
+        outDir=outDir,
+    )
