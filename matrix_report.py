@@ -253,6 +253,13 @@ def FillDefaultParams(
     if params.computeSpectrum is None:
         params.computeSpectrum = defaultChoice.limitSpectrum.IsWithin(matrix)
 
+    if params.computeSpectrum and matrix.shape[0] != matrix.shape[1]:
+        print(
+            f"WARN: will not compute spectrum of {params.name}, "
+            + "since it is not square"
+        )
+        params.computeSpectrum = False
+
     if params.computeCond is None:
         if defaultChoice.limitCond.IsWithin(matrix):
             params.computeCond = defaultChoice.defaultCondTol
@@ -413,8 +420,8 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         dataCell += (
             "<br/>"
-            + f"max px fill = {maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d} "
-            + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>"
+            + f"max px fill = {maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d}<br/>"
+            + f"              ({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>"
         )
 
         figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
@@ -447,7 +454,6 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         ax.scatter(cols, rows, params.scatterParams.pointSize, color=colors)
 
         ax.grid()
-
         ax.set(
             title="Nonzero pattern",
             xlim=[-PLOT_MARGIN * (n - 1), (1 + PLOT_MARGIN) * (n - 1)],
@@ -486,10 +492,81 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
         plt.close(fig)
 
+        cond2 = 0
+
+        if abs(singularValues[-1]) < 1e-16:
+            cond2 = +np.inf
+        else:
+            cond2 = singularValues[0] / singularValues[-1]
+
         dataCell += (
             "<br/>"
             + f"sing range = ({singularValues[-1]:11.4e}, {singularValues[0]:11.4e})<br/>"
-            + f"cond(p=2) = {singularValues[0] / singularValues[-1]:11.4e}<br/>"
+            + f"cond(p=2)  = {cond2:11.4e}<br/>"
+        )
+
+        figCells += f'<td><img src="{filepath}" /></td>'
+
+    # --- Spectrum ---
+
+    if params.computeSpectrum:
+        filepath = imagePrefix + "-spectrum.png"
+
+        if matrixDense is None:
+            matrixDense = matrix.todense()
+
+        spectrum = scipy.linalg.eigvals(matrixDense)
+
+        plotData = np.zeros((len(spectrum), 3))
+        uniqueValues = 0
+        realCount = 0
+
+        for z in spectrum:
+            if abs(z.imag) < 1e-16:
+                realCount += 1
+            multiple = False
+            for k in range(uniqueValues):
+                if abs(z - (plotData[k, 0] + plotData[k, 1] * 1j)) < 1e-16:
+                    plotData[k, 2] += 1
+                    multiple = True
+                break
+            if not multiple:
+                plotData[uniqueValues] = (z.real, z.imag, 1)
+                uniqueValues += 1
+
+        plotData = plotData[:uniqueValues]
+        maxMult = plotData[:uniqueValues, 2].max()
+
+        colors = np.zeros((uniqueValues, 4))
+
+        for k in range(uniqueValues):
+            z = (plotData[k, 2] - 1) / maxMult
+            colors[k] = (z, 0, 1 - z, 0.5)
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        ax.scatter(plotData[:, 0], plotData[:, 1], color=colors)
+
+        ax.grid()
+        ax.set(title="Spectrum", xlabel="Real", ylabel="Imaginary")
+
+        fig.tight_layout()
+        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        plt.close()
+
+        absArr = np.zeros(uniqueValues)
+
+        for k in range(uniqueValues):
+            absArr[k] = np.sqrt(plotData[k, 0] ** 2 + plotData[k, 1] ** 2)
+
+        dataCell += (
+            "<br/>"
+            + "Spectrum<br/>"
+            + f"real range = ({plotData[:, 0].min():11.4e}, {plotData[:, 0].max():11.4e})<br/>"
+            + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].min():11.4e})<br/>"
+            + f"abs  range = ({absArr.min():11.4e}, {absArr.max():11.4e})<br/>"
+            + f"real l     = {realCount} ({realCount / n * 100:8.4f}%)<br/>"
+            + f"max mult   = {int(maxMult)}<br/>"
         )
 
         figCells += f'<td><img src="{filepath}" /></td>'
