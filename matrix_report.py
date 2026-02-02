@@ -12,6 +12,8 @@ from collections.abc import Callable
 
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
+DEFAULT_MAX = 1e10
+DEFAULT_PX_COLS = 256
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -36,7 +38,7 @@ MatrixLoader = Callable[[], MatrixDescType]
 class ShadeParams:
     enabled: bool = True
     pxRows: int = -1  # scale to ratio
-    pxCols: int = 256
+    pxCols: int = DEFAULT_PX_COLS
     scale: Literal["log", "linear"] = "linear"
 
     def Disabled():
@@ -49,7 +51,7 @@ class ColormapParams:
     scale: Literal["log", "linear"] = "log"
     zeroTol: float = 0
     minColor: float = 1e-16
-    maxColor: float = 1e20
+    maxColor: float = 1e5
 
     def Disabled():
         return ColormapParams(enabled=False)
@@ -76,20 +78,23 @@ def GetValuesColor(values: list[float] | float, colormap: ColormapParams):
     if type(values) is float:
         values = [values]
 
-    pos = [v for v in values if v > 0]
-    neg = [v for v in values if v < 0]
+    pos = [v for v in values if v > colormap.zeroTol]
+    neg = [v for v in values if v < -colormap.zeroTol]
+
+    if len(values) == 0:
+        return (1, 1, 1)
 
     if colormap.zeroTol == 0 and len(pos) + len(neg) == 0:
         return (1, 1, 0)  # yellow
 
-    posAvg = sum(pos) / len(pos)
-    negAvg = sum(neg) / len(neg)
+    posAvg = sum(pos) / len(pos) if len(pos) > 0 else 0
+    negAvg = sum(neg) / len(neg) if len(neg) > 0 else 0
 
     if posAvg < colormap.minColor and -negAvg < colormap.minColor:
         return (0, 1, 0)  # green
 
     red = ScaleValue(colormap, posAvg)
-    blu = ScaleValue(colormap, negAvg)
+    blu = ScaleValue(colormap, -negAvg)
 
     return (red, 0, blu)
 
@@ -98,8 +103,8 @@ def GetValuesColor(values: list[float] | float, colormap: ColormapParams):
 class ColorParams:
     enabled: bool = True
     pxRows: int = -1
-    pxCols: int = 256
-    colorMap: ColormapParams = ColormapParams()
+    pxCols: int = DEFAULT_PX_COLS
+    colormap: ColormapParams = ColormapParams()
 
     def Disabled():
         return ColorParams(enabled=False)
@@ -254,8 +259,56 @@ def FillDefaultParams(
     return params
 
 
-def CreateLine(matrix: CSRMatrix, params: list[ReportParams], outDir: str):
+def ComputeImageSize(pxRows_, pxCols_, m, n):
+    pxRows = pxRows_
+    pxCols = pxCols_
+
+    if pxRows <= 0 and pxCols <= 0:
+        pxCols = DEFAULT_PX_COLS
+
+    if pxRows <= 0:
+        pxRows = int(m * pxCols / n)
+
+    if pxCols <= 0:
+        pxCols = int(n * pxRows / m)
+
+    pxRows = min(pxRows, m)
+    pxCols = min(pxCols, n)
+
+    return pxRows, pxCols
+
+
+def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
+    m, n = matrix.shape
+
+    pxSize = int(math.ceil(m / pxRows)) * int(math.ceil(n / pxCols))
+
+    for ib in range(pxRows):
+        rowPx = np.zeros((pxCols, pxSize))
+        rowPxSize = np.zeros(pxCols, dtype=int)
+
+        iStart = int(math.ceil(ib * m / pxRows))
+        iEnd = min(int(math.ceil((ib + 1) * m / pxRows)), m)
+
+        for p in range(iEnd - iStart):
+            i = iStart + p
+            start = matrix.indptr[i]
+            end = matrix.indptr[i + 1]
+            for kk in range(end - start):
+                k = start + kk
+                v = matrix.data[k]
+                j = matrix.indices[k]
+                jb = j * pxCols // n
+                rowPx[jb, rowPxSize[jb]] = v
+                rowPxSize[jb] += 1
+
+        for jb in range(pxCols):
+            process(ib, jb, rowPx[jb, : rowPxSize[jb]])
+
+
+def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
     # --- Basic info ---
+
     m, n = matrix.shape
     nnz = matrix.getnnz()
     sparsity = nnz / (n * m) * 100
@@ -278,6 +331,30 @@ def CreateLine(matrix: CSRMatrix, params: list[ReportParams], outDir: str):
     )
     figCells = ""
 
+    # --- Color and Shade Image ---
+
+    if params.colorParams.enabled:
+        filepath = os.path.join(IMAGE_DIR, f"{params.name}-px.png")
+        pxRows, pxCols = ComputeImageSize(
+            params.colorParams.pxRows,
+            params.colorParams.pxCols,
+            m,
+            n,
+        )
+        imageData = np.zeros((pxRows, pxCols, 3))
+
+        def Process(ib, jb, values):
+            color = GetValuesColor(list(values), params.colorParams.colormap)
+            imageData[ib, jb] = color
+
+        ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
+
+        plt.imsave(os.path.join(outDir, filepath), imageData)
+
+        figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
+
+    # --- Tail ---
+
     dataCell += "</tt>"
 
     return f"<tr><td>{dataCell}</td>{figCells}</tr>"
@@ -294,7 +371,7 @@ def CreateReport(
 
     output = (
         "<html><style>"
-        + "img {{ width: 500; border: 1px solid black; }}\n"
+        + "img { width: 500; border: 1px solid black; }\n"
         + ".pixelated { image-rendering: pixelated; "
         + "image-rendering: -moz-crisp-edges; }\n"
         + "tt {white-space: pre;}\n"
@@ -331,8 +408,6 @@ def CreateReport(
     with open(os.path.join(outDir, REPORT_NAME), "w") as f:
         f.write(output)
 
-
-__all__ = ["CreateReport"]
 
 if __name__ == "__main__":
     argvs = list(sys.argv)
