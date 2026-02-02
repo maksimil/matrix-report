@@ -39,7 +39,8 @@ class ShadeParams:
     enabled: bool = True
     pxRows: int = -1  # scale to ratio
     pxCols: int = DEFAULT_PX_COLS
-    scale: Literal["log", "linear"] = "linear"
+    zeroTol: float = -1
+    scale: Literal["linear"] = "linear"
 
     def Disabled():
         return ShadeParams(enabled=False)
@@ -303,7 +304,11 @@ def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
                 rowPxSize[jb] += 1
 
         for jb in range(pxCols):
-            process(ib, jb, rowPx[jb, : rowPxSize[jb]])
+            r = iEnd - iStart
+            jStart = int(math.ceil(jb * n / pxCols))
+            jEnd = min(int(math.ceil((jb + 1) * n / pxCols)), n)
+            c = jEnd - jStart
+            process(ib, jb, r, c, rowPx[jb, : rowPxSize[jb]])
 
 
 def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
@@ -312,6 +317,8 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
     m, n = matrix.shape
     nnz = matrix.getnnz()
     sparsity = nnz / (n * m) * 100
+
+    imagePrefix = os.path.join(IMAGE_DIR, params.name)
 
     posArr = matrix.data[matrix.data > 0]
     negArr = matrix.data[matrix.data < 0]
@@ -331,25 +338,64 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
     )
     figCells = ""
 
-    # --- Color and Shade Image ---
+    # --- Color image ---
 
     if params.colorParams.enabled:
-        filepath = os.path.join(IMAGE_DIR, f"{params.name}-px.png")
+        filepath = imagePrefix + "-px.png"
         pxRows, pxCols = ComputeImageSize(
-            params.colorParams.pxRows,
-            params.colorParams.pxCols,
-            m,
-            n,
+            params.colorParams.pxRows, params.colorParams.pxCols, m, n
         )
         imageData = np.zeros((pxRows, pxCols, 3))
 
-        def Process(ib, jb, values):
+        def Process(ib, jb, r, c, values):
             color = GetValuesColor(list(values), params.colorParams.colormap)
             imageData[ib, jb] = color
 
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
 
         plt.imsave(os.path.join(outDir, filepath), imageData)
+
+        figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
+
+    # --- Shade image ---
+
+    if params.shadeParams.enabled:
+        filepath = imagePrefix + "-shade.png"
+        pxRows, pxCols = ComputeImageSize(
+            params.colorParams.pxRows, params.colorParams.pxCols, m, n
+        )
+        densityData = np.zeros((pxRows, pxCols))
+        imageData = np.zeros((pxRows, pxCols, 3))
+
+        maxPxSize = np.zeros(1, dtype=int)
+        maxFill = np.zeros(1, dtype=int)
+
+        def Process(ib, jb, r, c, values):
+            nzvalues = [v for v in values if abs(v) > params.shadeParams.zeroTol]
+            nnz = len(nzvalues)
+            densityData[ib, jb] = len(nzvalues) / (r * c)
+            maxPxSize[0] = max(r * c, maxPxSize[0])
+            maxFill[0] = max(nnz, maxFill[0])
+
+        ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
+
+        maxDensity = densityData.max()
+        white = np.array([1, 1, 1])
+        black = np.array([0, 0, 0])
+
+        for ib in range(pxRows):
+            for jb in range(pxCols):
+                imageData[ib, jb] = (
+                    white + (black - white) * densityData[ib, jb] / maxDensity
+                )
+
+        plt.imsave(os.path.join(outDir, filepath), imageData)
+
+        dataCell += (
+            "<br/>"
+            + f"max px fill = {maxFill[0]:6d}/{maxPxSize[0]:6d} "
+            + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>"
+        )
 
         figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
 
