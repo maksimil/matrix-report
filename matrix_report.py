@@ -338,6 +338,8 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         minNeg = negArr.min()
         maxNeg = negArr.max()
 
+    matrixDense = None
+
     dataCell = (
         f"<tt><b>{params.name}</b><br/>"
         + f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
@@ -458,6 +460,37 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         fig.tight_layout()
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
         plt.close(fig)
+
+        figCells += f'<td><img src="{filepath}" /></td>'
+
+    # --- Singular values ---
+
+    if params.computeSingular:
+        filepath = imagePrefix + "-sing.png"
+
+        if matrixDense is None:
+            matrixDense = matrix.todense()
+
+        singularValues = np.linalg.svd(
+            matrixDense, full_matrices=False, compute_uv=False
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        ax.plot(list(range(len(singularValues))), singularValues, "k-")
+
+        ax.grid()
+        ax.set(title="Singular values", yscale="log")
+
+        fig.tight_layout()
+        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+        dataCell += (
+            "<br/>"
+            + f"sing range = ({singularValues[-1]:11.4e}, {singularValues[0]:11.4e})<br/>"
+            + f"cond(p=2) = {singularValues[0] / singularValues[-1]:11.4e}<br/>"
+        )
 
         figCells += f'<td><img src="{filepath}" /></td>'
 
