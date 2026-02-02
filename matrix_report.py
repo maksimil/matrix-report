@@ -14,6 +14,7 @@ IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 DEFAULT_MAX = 1e10
 DEFAULT_PX_COLS = 256
+PLOT_MARGIN = 0.01
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -48,14 +49,10 @@ class ShadeParams:
 
 @dataclass
 class ColormapParams:
-    enabled: bool = True
     scale: Literal["log", "linear"] = "log"
     zeroTol: float = 0
     minColor: float = 1e-16
     maxColor: float = 1e5
-
-    def Disabled():
-        return ColormapParams(enabled=False)
 
 
 def ScaleValue(colormap: ColormapParams, v: float):
@@ -75,7 +72,7 @@ def ScaleValue(colormap: ColormapParams, v: float):
     return None
 
 
-def GetValuesColor(values: list[float] | float, colormap: ColormapParams):
+def GetValuesColor(values: list[float], colormap: ColormapParams):
     if type(values) is float:
         values = [values]
 
@@ -112,13 +109,24 @@ class ColorParams:
 
 
 @dataclass
+class ScatterParams:
+    enabled: bool = True
+    alpha: float = 0.2
+    pointSize: float = 10
+    colormap: ColorParams = ColormapParams()
+
+    def Disabled():
+        return ColorParams(enabled=False)
+
+
+@dataclass
 class ReportParams:
     matrix: MatrixDescType | MatrixLoader
     name: str | None = None
 
     colorParams: ColorParams | NoneType = None
     shadeParams: ShadeParams | NoneType = None
-    scatterParams: ColormapParams | NoneType = None
+    scatterParams: ScatterParams | NoneType = None
 
     computeSingular: bool | NoneType = None
     computeSpectrum: bool | NoneType = None
@@ -157,7 +165,7 @@ class DefaultChoiceParams:
     defaultShadeParams: ShadeParams = ShadeParams()
     limitShade: MatrixLimit = MatrixLimit()
 
-    defaultScatterParams: ColormapParams = ColormapParams()
+    defaultScatterParams: ScatterParams = ScatterParams()
     limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
 
     limitSingular: MatrixLimit = MatrixLimit.Square(n=10_000)
@@ -237,7 +245,7 @@ def FillDefaultParams(
         if defaultChoice.limitScatter.IsWithin(matrix):
             params.scatterParams = defaultChoice.defaultScatterParams
         else:
-            params.scatterParams = ColormapParams.Disabled()
+            params.scatterParams = ScatterParams.Disabled()
 
     if params.computeSingular is None:
         params.computeSingular = defaultChoice.limitSingular.IsWithin(matrix)
@@ -368,6 +376,8 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         imageData = np.zeros((pxRows, pxCols, 3))
 
         maxPxSize = np.zeros(1, dtype=int)
+        minPxSize = np.zeros(1, dtype=int)
+        minPxSize[0] = INT_MAX
         maxFill = np.zeros(1, dtype=int)
 
         def Process(ib, jb, r, c, values):
@@ -375,6 +385,7 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             nnz = len(nzvalues)
             densityData[ib, jb] = len(nzvalues) / (r * c)
             maxPxSize[0] = max(r * c, maxPxSize[0])
+            minPxSize[0] = min(r * c, maxPxSize[0])
             maxFill[0] = max(nnz, maxFill[0])
 
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
@@ -382,22 +393,73 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         maxDensity = densityData.max()
         white = np.array([1, 1, 1])
         black = np.array([0, 0, 0])
+        red = np.array([1, 0, 0])
 
         for ib in range(pxRows):
             for jb in range(pxCols):
-                imageData[ib, jb] = (
-                    white + (black - white) * densityData[ib, jb] / maxDensity
-                )
+                z = densityData[ib, jb] / maxDensity
+                color = None
+                if z == 0:
+                    color = white
+                elif z < 0.5:
+                    color = white + (red - white) * (z + 0.2)
+                else:
+                    color = white + (black - white) * z
+                imageData[ib, jb] = color
 
         plt.imsave(os.path.join(outDir, filepath), imageData)
 
         dataCell += (
             "<br/>"
-            + f"max px fill = {maxFill[0]:6d}/{maxPxSize[0]:6d} "
+            + f"max px fill = {maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d} "
             + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>"
         )
 
         figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
+
+    # --- Scatter image ---
+
+    if params.scatterParams.enabled:
+        filepath = imagePrefix + "-scatter.png"
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        rows = np.zeros(nnz)
+        cols = np.zeros(nnz)
+        colors = np.zeros((nnz, 4))
+
+        for i in range(m):
+            start = matrix.indptr[i]
+            end = matrix.indptr[i + 1]
+            for kk in range(end - start):
+                k = start + kk
+                v = matrix.data[k]
+                j = matrix.indices[k]
+                color = GetValuesColor([v], params.scatterParams.colormap)
+
+                rows[k] = i
+                cols[k] = j
+                colors[k, :3] = color
+                colors[k, 3] = params.scatterParams.alpha
+
+        ax.scatter(cols, rows, params.scatterParams.pointSize, color=colors)
+
+        ax.grid()
+
+        ax.set(
+            title="Nonzero pattern",
+            xlim=[-PLOT_MARGIN * (n - 1), (1 + PLOT_MARGIN) * (n - 1)],
+            xlabel="Columns",
+            ylim=[-PLOT_MARGIN * (m - 1), (1 + PLOT_MARGIN) * (m - 1)],
+            ylabel="Rows",
+        )
+
+        ax.invert_yaxis()
+        fig.tight_layout()
+        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+        figCells += f'<td><img src="{filepath}" /></td>'
 
     # --- Tail ---
 
@@ -417,10 +479,11 @@ def CreateReport(
 
     output = (
         "<html><style>"
-        + "img { width: 500; border: 1px solid black; }\n"
+        + "img { width: 500; "
+        + "border: 1px solid black; }\n"
         + ".pixelated { image-rendering: pixelated; "
         + "image-rendering: -moz-crisp-edges; }\n"
-        + "tt {white-space: pre;}\n"
+        + "tt { white-space: pre; }\n"
         + "@media print { .page-break { break-after: page; } }\n"
         + "</style><body><table>"
     )
