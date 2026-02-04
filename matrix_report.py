@@ -331,6 +331,55 @@ def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
             process(ib, jb, r, c, rowPx[jb, : rowPxSize[jb]])
 
 
+@dataclass
+class DataText:
+    heading: str | None
+    text: str
+    figN: str | None = None
+
+    def FormFigureText(self):
+        return f"<td>{self.text}<br/>Figure {self.figN}. {self.heading}</td>"
+
+    def FormDataText(self):
+        headtext = ""
+        if self.heading is not None:
+            headtext = f"<u>{self.heading}</u>"
+
+        return f"<tt>{headtext}<br/>{self.text}<br/></tt>"
+
+
+class HTMLOutput:
+    name: str
+    dataTexts: list[DataText]
+    figures: list[DataText]
+
+    def __init__(self, name):
+        self.name = name
+        self.dataTexts = []
+        self.figures = []
+
+    def AddFigure(self, heading, html):
+        figN = len(self.figures) + 1
+        self.figures.append(DataText(heading=heading, figN=figN, text=html))
+        return figN
+
+    def AddData(self, heading, text):
+        self.dataTexts.append(DataText(heading=heading, text=text))
+
+    def FormLine(self):
+        figCells = ""
+        for fig in self.figures:
+            figCells += fig.FormFigureText()
+
+        dataCell = ""
+        for d in self.dataTexts:
+            dataCell += d.FormDataText()
+
+        dataCell = f"<td><tt><b>{self.name}</b></tt><br/>{dataCell}</td>"
+
+        return f"<tr>{dataCell}{figCells}</tr>"
+
+
 def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
     # --- Basic info ---
 
@@ -354,14 +403,15 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
     bandLower, bandUpper = scipy.sparse.linalg.spbandwidth(matrix)
 
-    dataCell = (
-        f"<tt><b>{params.name}</b><br/>"
-        + f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
+    out = HTMLOutput(params.name)
+
+    out.AddData(
+        "General data",
+        f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
         + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
         + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
-        + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>"
+        + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>",
     )
-    figCells = ""
 
     # --- Color image ---
 
@@ -380,7 +430,10 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         plt.imsave(os.path.join(outDir, filepath), imageData)
 
-        figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
+        out.AddFigure(
+            "Color image",
+            f'<img class="pixelated" src="{filepath}" />',
+        )
 
     # --- Shade image ---
 
@@ -426,13 +479,17 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         plt.imsave(os.path.join(outDir, filepath), imageData)
 
-        dataCell += (
-            "<br/>"
-            + f"max px fill = {maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d}<br/>"
-            + f"              ({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>"
+        figN = out.AddFigure(
+            "Shade image", f'<img class="pixelated" src="{filepath}" />'
         )
 
-        figCells += f'<td><img class="pixelated" src="{filepath}" /></td>'
+        out.AddData(
+            f"Shade data (Figure {figN})",
+            ""
+            + "max px fill =<br/>"
+            + f"{maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d} "
+            + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>",
+        )
 
     # --- Scatter image ---
 
@@ -463,7 +520,6 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         ax.grid()
         ax.set(
-            title="Nonzero pattern",
             xlim=[-PLOT_MARGIN * (n - 1), (1 + PLOT_MARGIN) * (n - 1)],
             xlabel="Columns",
             ylim=[-PLOT_MARGIN * (m - 1), (1 + PLOT_MARGIN) * (m - 1)],
@@ -475,7 +531,7 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
         plt.close(fig)
 
-        figCells += f'<td><img src="{filepath}" /></td>'
+        out.AddFigure("Scatter nonzeros", f'<img src="{filepath}" />')
 
     # --- Singular values ---
 
@@ -495,7 +551,7 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         ax.plot(list(range(len(singularValues))), singularValues, "k-")
 
         ax.grid()
-        ax.set(title="Singular values", yscale="log")
+        ax.set(yscale="log")
 
         fig.tight_layout()
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
@@ -511,13 +567,14 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         else:
             cond2 = singMax / singMin
 
-        dataCell += (
-            "<br/>"
-            + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
-            + f"k(p=2)  = {cond2:11.4e}<br/>"
-        )
+        figN = out.AddFigure("Singular values", f'<img src="{filepath}" />')
 
-        figCells += f'<td><img src="{filepath}" /></td>'
+        out.AddData(
+            f"Singular values (Figure {figN})",
+            ""
+            + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
+            + f"k(p=2)  = {cond2:11.4e}<br/>",
+        )
 
     # --- Condition number ---
 
@@ -558,11 +615,12 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         cond2Min = (singMax - tol) / (singMin + tol)
 
-        dataCell += (
-            "<br/>"
+        out.AddData(
+            "Approximate singular values",
+            ""
             + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
             + f"          ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
-            + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>"
+            + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>",
         )
 
     # --- Spectrum ---
@@ -606,7 +664,7 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         ax.scatter(plotData[:, 0], plotData[:, 1], color=colors)
 
         ax.grid()
-        ax.set(title="Spectrum", xlabel="Real", ylabel="Imaginary")
+        ax.set(xlabel="Real", ylabel="Imaginary")
 
         fig.tight_layout()
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
@@ -617,23 +675,21 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         for k in range(uniqueValues):
             absArr[k] = np.sqrt(plotData[k, 0] ** 2 + plotData[k, 1] ** 2)
 
-        dataCell += (
-            "<br/>"
-            + "Spectrum<br/>"
+        figN = out.AddFigure("Spectrum", f'<img src="{filepath}" />')
+
+        out.AddData(
+            "Spectrum",
+            ""
             + f"real range = ({plotData[:, 0].min():11.4e}, {plotData[:, 0].max():11.4e})<br/>"
             + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].min():11.4e})<br/>"
             + f"abs  range = ({absArr.min():11.4e}, {absArr.max():11.4e})<br/>"
             + f"real l     = {realCount} ({realCount / n * 100:8.4f}%)<br/>"
-            + f"max mult   = {int(maxMult)}<br/>"
+            + f"max mult   = {int(maxMult)}",
         )
-
-        figCells += f'<td><img src="{filepath}" /></td>'
 
     # --- Tail ---
 
-    dataCell += "</tt>"
-
-    return f"<tr><td>{dataCell}</td>{figCells}</tr>"
+    return out.FormLine()
 
 
 def CreateReport(
@@ -676,9 +732,9 @@ def CreateReport(
             f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[0]}"
         )
 
-        line = CreateLine(matrixData.matrix, params, outDir)
+        lines = CreateLine(matrixData.matrix, params, outDir)
 
-        output += line
+        output += lines
 
     output += "</table></body></html>"
 
@@ -690,7 +746,7 @@ if __name__ == "__main__":
     argvs = list(sys.argv)
 
     if len(argvs) < 3:
-        print("USAGE: matrix-report [matrix directory] [out directory]")
+        print("USAGE: matrix_report [matrix directory] [out directory]")
         exit(-1)
 
     matDir = argvs[1]
@@ -701,6 +757,8 @@ if __name__ == "__main__":
         if os.path.isfile(os.path.join(matDir, f))
         and os.path.splitext(f)[1] in [".mtx", ".npz"]
     ]
+
+    matFnames.sort()
 
     CreateReport(
         matrices=[
