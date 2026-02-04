@@ -40,7 +40,7 @@ class ShadeParams:
     enabled: bool = True
     pxRows: int = -1  # scale to ratio
     pxCols: int = DEFAULT_PX_COLS
-    zeroTol: float = -1
+    zeroTol: float = 0
     scale: Literal["linear"] = "linear"
 
     def Disabled():
@@ -120,6 +120,15 @@ class ScatterParams:
 
 
 @dataclass
+class CondParams:
+    enabled: bool = True
+    tol: float = 1e-4
+
+    def Disabled():
+        return CondParams(enabled=False)
+
+
+@dataclass
 class ReportParams:
     matrix: MatrixDescType | MatrixLoader
     name: str | None = None
@@ -129,8 +138,8 @@ class ReportParams:
     scatterParams: ScatterParams | NoneType = None
 
     computeSingular: bool | NoneType = None
+    condParams: CondParams | NoneType = None
     computeSpectrum: bool | NoneType = None
-    computeCond: float | NoneType = None
     luCond: bool | NoneType = None
     enableFFT: bool | NoneType = None
 
@@ -170,10 +179,10 @@ class DefaultChoiceParams:
 
     limitSingular: MatrixLimit = MatrixLimit.Square(n=10_000)
 
-    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
-
-    defaultCondTol: float = 1e-4
+    defaultCondParams: CondParams = CondParams()
     limitCond: MatrixLimit = MatrixLimit(maxNNZ=100_000)
+
+    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
 
     limitLuCond: MatrixLimit = MatrixLimit.Disabled()
 
@@ -250,7 +259,7 @@ def FillDefaultParams(
     if params.computeSingular is None:
         params.computeSingular = defaultChoice.limitSingular.IsWithin(matrix)
 
-    if params.computeSpectrum is None:
+    if params.computeSpectrum is None and matrix.shape[0] != matrix.shape[1]:
         params.computeSpectrum = defaultChoice.limitSpectrum.IsWithin(matrix)
 
     if params.computeSpectrum and matrix.shape[0] != matrix.shape[1]:
@@ -260,11 +269,11 @@ def FillDefaultParams(
         )
         params.computeSpectrum = False
 
-    if params.computeCond is None:
+    if params.condParams is None:
         if defaultChoice.limitCond.IsWithin(matrix):
-            params.computeCond = defaultChoice.defaultCondTol
+            params.condParams = defaultChoice.defaultCondParams
         else:
-            params.computeCond = -1.0
+            params.condParams = CondParams.Disabled()
 
     if params.luCond is None:
         params.luCond = defaultChoice.limitLuCond.IsWithin(matrix)
@@ -471,6 +480,7 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
     # --- Singular values ---
 
+    singMin, singMax = None, None
     if params.computeSingular:
         filepath = imagePrefix + "-sing.png"
 
@@ -492,20 +502,69 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
         plt.close(fig)
 
+        singMin = singularValues[-1]
+        singMax = singularValues[0]
+
         cond2 = 0
 
-        if abs(singularValues[-1]) < 1e-16:
+        if abs(singMin) < 1e-16:
             cond2 = +np.inf
         else:
-            cond2 = singularValues[0] / singularValues[-1]
+            cond2 = singMax / singMin
 
         dataCell += (
             "<br/>"
-            + f"sing range = ({singularValues[-1]:11.4e}, {singularValues[0]:11.4e})<br/>"
+            + f"sing range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
             + f"cond(p=2)  = {cond2:11.4e}<br/>"
         )
 
         figCells += f'<td><img src="{filepath}" /></td>'
+
+    # --- Condition number ---
+
+    elif params.condParams.enabled:
+        tol = params.condParams.tol
+
+        singMax = scipy.sparse.linalg.svds(
+            matrix,
+            k=1,
+            which="LM",
+            tol=tol,
+            random_state=42,
+            return_singular_vectors=False,
+        )
+        singMax = singMax[0]
+
+        singMin = scipy.sparse.linalg.svds(
+            matrix,
+            k=1,
+            which="SM",
+            tol=tol,
+            random_state=42,
+            return_singular_vectors=False,
+        )
+        singMin = singMin[0]
+
+        cond2 = None
+        if abs(singMin) < 1e-16:
+            cond2 = +np.inf
+        else:
+            cond2 = singMax / singMin
+
+        cond2Max = None
+        if singMin < tol + 1e-16:
+            cond2Max = +np.inf
+        else:
+            cond2Max = (singMax + tol) / (singMin - tol)
+
+        cond2Min = (singMax - tol) / (singMin + tol)
+
+        dataCell += (
+            "<br/>"
+            + f"sing range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
+            + f"             ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
+            + f"cond(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>"
+        )
 
     # --- Spectrum ---
 
