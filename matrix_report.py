@@ -4,7 +4,6 @@ import numpy as np
 import scipy
 from matplotlib import pyplot as plt
 import math
-import random
 from dataclasses import dataclass
 from types import NoneType
 from typing import Literal
@@ -140,7 +139,7 @@ class ReportParams:
     computeSingular: bool | NoneType = None
     condParams: CondParams | NoneType = None
     computeSpectrum: bool | NoneType = None
-    luCond: bool | NoneType = None
+
     enableFFT: bool | NoneType = None
 
 
@@ -259,7 +258,7 @@ def FillDefaultParams(
     if params.computeSingular is None:
         params.computeSingular = defaultChoice.limitSingular.IsWithin(matrix)
 
-    if params.computeSpectrum is None and matrix.shape[0] != matrix.shape[1]:
+    if params.computeSpectrum is None and matrix.shape[0] == matrix.shape[1]:
         params.computeSpectrum = defaultChoice.limitSpectrum.IsWithin(matrix)
 
     if params.computeSpectrum and matrix.shape[0] != matrix.shape[1]:
@@ -274,9 +273,6 @@ def FillDefaultParams(
             params.condParams = defaultChoice.defaultCondParams
         else:
             params.condParams = CondParams.Disabled()
-
-    if params.luCond is None:
-        params.luCond = defaultChoice.limitLuCond.IsWithin(matrix)
 
     if params.enableFFT is None:
         params.enableFFT = defaultChoice.limitFFT.IsWithin(matrix)
@@ -356,11 +352,14 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
     matrixDense = None
 
+    bandLower, bandUpper = scipy.sparse.linalg.spbandwidth(matrix)
+
     dataCell = (
         f"<tt><b>{params.name}</b><br/>"
         + f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
         + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
         + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
+        + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>"
     )
     figCells = ""
 
@@ -514,8 +513,8 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         dataCell += (
             "<br/>"
-            + f"sing range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
-            + f"cond(p=2)  = {cond2:11.4e}<br/>"
+            + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
+            + f"k(p=2)  = {cond2:11.4e}<br/>"
         )
 
         figCells += f'<td><img src="{filepath}" /></td>'
@@ -561,9 +560,9 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         dataCell += (
             "<br/>"
-            + f"sing range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
-            + f"             ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
-            + f"cond(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>"
+            + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
+            + f"          ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
+            + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>"
         )
 
     # --- Spectrum ---
