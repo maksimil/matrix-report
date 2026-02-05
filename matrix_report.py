@@ -14,7 +14,7 @@ IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 DEFAULT_PX_COLS = 256
 PLOT_MARGIN = 0.01
-FIGURE_PER_ROW_MAX = 2
+COL_PER_ROW_MAX = 2
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -346,7 +346,7 @@ class DataText:
         if self.heading is not None:
             headtext = f"<u>{self.heading}</u>"
 
-        return f"<tt>{headtext}<br/>{self.text}<br/></tt>"
+        return f"<tt>{headtext}<br/>{self.text}</tt>"
 
 
 class HTMLOutput:
@@ -372,18 +372,40 @@ class HTMLOutput:
         for i in range(len(self.figures)):
             fig = self.figures[i]
 
-            if i > 0 and i % FIGURE_PER_ROW_MAX == 0:
+            if i > 0 and i % COL_PER_ROW_MAX == 0:
                 figRows += "</tr><tr>"
             figRows += fig.FormFigureText()
         figRows += "</tr>"
 
-        dataCell = ""
+        dataCells = []
+        dataSizes = []
         for d in self.dataTexts:
-            dataCell += d.FormDataText()
+            text = d.FormDataText()
+            dataCells.append(text)
+            dataSizes.append(text.count("<br/>"))
+
+        textLines = sum(dataSizes) + len(dataSizes) - 1
+
+        colLines = 0
+        dataCols = [""]
+
+        for i in range(len(dataCells)):
+            if colLines > textLines / COL_PER_ROW_MAX:
+                dataCols.append("")
+                colLines = 0
+
+            if colLines != 0:
+                dataCols[-1] += "<br/>"
+
+            dataCols[-1] += dataCells[i]
+            colLines += dataSizes[i]
+
+        dataRow = "".join(f"<td>{t}</td>" for t in dataCols)
+        dataRow = f"<tr>{dataRow}</tr>"
 
         return (
             f'<tr class="page-break"><td><tt><b>{self.name}</b></tt></td></tr>'
-            + f"<tr><td>{dataCell}</td></tr>"
+            + dataRow
             + figRows
         )
 
@@ -761,10 +783,10 @@ def CreateLine(
             f"Spectrum (Figure {figN})",
             ""
             + f"real range = ({plotData[:, 0].min():11.4e}, {plotData[:, 0].max():11.4e})<br/>"
-            + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].min():11.4e})<br/>"
+            + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].max():11.4e})<br/>"
             + f"abs  range = ({absArr.min():11.4e}, {absArr.max():11.4e})<br/>"
             + f"real l     = {realCount} ({realCount / n * 100:8.4f}%)<br/>"
-            + f"max mult   = {int(maxMult)}",
+            + f"max mult   = {int(maxMult)}<br/>",
         )
 
         logger.FinishSection()
@@ -794,6 +816,7 @@ def CreateReport(
         + ".pixelated { image-rendering: pixelated; "
         + "image-rendering: -moz-crisp-edges; }\n"
         + "tt { white-space: pre; }\n"
+        + "td { vertical-align: top }\n"
         + "@media print { .page-break { break-before: page; } }\n"
         + "</style><body><table>"
     )
