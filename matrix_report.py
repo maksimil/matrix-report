@@ -138,12 +138,28 @@ class ScatterParams:
 
 
 @dataclass
+class SingularParams:
+    enabled: bool = True
+
+    def Disabled():
+        return SingularParams(enabled=False)
+
+
+@dataclass
 class CondParams:
     enabled: bool = True
     tol: float = 1e-4
 
     def Disabled():
         return CondParams(enabled=False)
+
+
+@dataclass
+class SpectrumParams:
+    enabled: bool = True
+
+    def Disabled():
+        return SpectrumParams(enabled=False)
 
 
 @dataclass
@@ -155,11 +171,9 @@ class ReportParams:
     shadeParams: ShadeParams | NoneType = None
     scatterParams: ScatterParams | NoneType = None
 
-    computeSingular: bool | NoneType = None
+    singularParams: SingularParams | NoneType = None
     condParams: CondParams | NoneType = None
-    computeSpectrum: bool | NoneType = None
-
-    enableFFT: bool | NoneType = None
+    spectrumParams: SpectrumParams | NoneType = None
 
 
 INT_MAX = sys.maxsize
@@ -195,16 +209,14 @@ class DefaultChoiceParams:
     defaultScatterParams: ScatterParams = ScatterParams()
     limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
 
+    defaultSingularParams: SingularParams = SingularParams()
     limitSingular: MatrixLimit = MatrixLimit.Square(n=10_000)
 
     defaultCondParams: CondParams = CondParams()
     limitCond: MatrixLimit = MatrixLimit(maxNNZ=100_000)
 
+    defaultSpectrumParams: SpectrumParams = SpectrumParams()
     limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
-
-    limitLuCond: MatrixLimit = MatrixLimit.Disabled()
-
-    limitFFT: MatrixLimit = MatrixLimit.Square(100_000)
 
 
 def LoadMatrix(loader: MatrixDescType | MatrixLoader):
@@ -257,45 +269,56 @@ def FillDefaultParams(
             params.name = retName
 
     if params.colorParams is None:
-        if defaultChoice.limitColor.IsWithin(matrix):
-            params.colorParams = defaultChoice.defaultColorParams
-        else:
-            params.colorParams = ColorParams.Disabled()
+        params.colorParams = (
+            defaultChoice.defaultColorParams
+            if defaultChoice.limitColor.IsWithin(matrix)
+            else ColorParams.Disabled()
+        )
 
     if params.shadeParams is None:
-        if defaultChoice.limitShade.IsWithin(matrix):
-            params.shadeParams = defaultChoice.defaultShadeParams
-        else:
-            params.shadeParams = ShadeParams.Disabled()
+        params.shadeParams = (
+            defaultChoice.defaultShadeParams
+            if defaultChoice.limitShade.IsWithin(matrix)
+            else ShadeParams.Disabled()
+        )
 
     if params.scatterParams is None:
-        if defaultChoice.limitScatter.IsWithin(matrix):
-            params.scatterParams = defaultChoice.defaultScatterParams
+        params.scatterParams = (
+            defaultChoice.defaultScatterParams
+            if defaultChoice.limitScatter.IsWithin(matrix)
+            else ScatterParams.Disabled()
+        )
+
+    if params.singularParams is None:
+        params.singularParams = (
+            defaultChoice.defaultSingularParams
+            if defaultChoice.limitSingular.IsWithin(matrix)
+            else SingularParams.Disabled()
+        )
+
+    if params.condParams is None:
+        params.condParams = (
+            defaultChoice.defaultCondParams
+            if defaultChoice.limitCond.IsWithin(matrix)
+            else CondParams.Disabled()
+        )
+
+    if params.spectrumParams is None:
+        if matrix.shape[0] == matrix.shape[1]:
+            params.spectrumParams = (
+                defaultChoice.defaultSpectrumParams
+                if defaultChoice.limitSpectrum.IsWithin(matrix)
+                else SpectrumParams.Disabled()
+            )
         else:
-            params.scatterParams = ScatterParams.Disabled()
+            params.spectrumParams = SpectrumParams.Disabled()
 
-    if params.computeSingular is None:
-        params.computeSingular = defaultChoice.limitSingular.IsWithin(matrix)
-
-    if params.computeSpectrum is None and matrix.shape[0] == matrix.shape[1]:
-        params.computeSpectrum = defaultChoice.limitSpectrum.IsWithin(matrix)
-
-    if params.computeSpectrum and matrix.shape[0] != matrix.shape[1]:
+    if params.spectrumParams.enabled and matrix.shape[0] != matrix.shape[1]:
         print(
             f"WARN: will not compute spectrum of {params.name}, "
             + "since it is not square"
         )
-        params.computeSpectrum = False
-
-    if params.condParams is None:
-        if defaultChoice.limitCond.IsWithin(matrix):
-            params.condParams = defaultChoice.defaultCondParams
-        else:
-            params.condParams = CondParams.Disabled()
-
-    if params.enableFFT is None:
-        params.enableFFT = defaultChoice.limitFFT.IsWithin(matrix)
-
+        params.spectrumParams = SpectrumParams.Disabled()
     return params
 
 
@@ -673,7 +696,7 @@ def CreateLine(
 
     # --- Singular values ---
 
-    if params.computeSingular:
+    if params.singularParams.enabled:
         logger.StartSection("Singular values")
 
         filepath = imagePrefix + "-sing.png"
@@ -770,7 +793,7 @@ def CreateLine(
 
     # --- Spectrum ---
 
-    if params.computeSpectrum:
+    if params.spectrumParams.enabled:
         logger.StartSection("Spectrum")
 
         filepath = imagePrefix + "-spectrum.png"
