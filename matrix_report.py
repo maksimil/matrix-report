@@ -1,4 +1,5 @@
 import sys
+import time
 import os
 import numpy as np
 import scipy
@@ -380,8 +381,57 @@ class HTMLOutput:
         return f"<tr>{dataCell}{figCells}</tr>"
 
 
-def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
+class VerboseLogger:
+    startTime: float
+    sectionTime: float
+    verbose: bool
+
+    def __init__(self):
+        self.startTime = time.perf_counter()
+
+    def StartSection(self, name):
+        self.sectionTime = time.perf_counter()
+        print(f"-> {name}")
+
+    def FinishSection(self):
+        now = time.perf_counter()
+        ela = now - self.sectionTime
+        print(f"   ({ela:6.2f} s)")
+
+    def Finish(self):
+        now = time.perf_counter()
+        ela = now - self.startTime
+        print(f"Finished all ({ela:6.2f} s)")
+
+
+class NoLogger:
+    def __init__(self):
+        pass
+
+    def StartSection(self, _):
+        pass
+
+    def FinishSection(self):
+        pass
+
+    def Finish(self):
+        pass
+
+
+def CreateLine(
+    matrix: CSRMatrix,
+    params: ReportParams,
+    outDir: str,
+    verbose: bool,
+):
+    logger = NoLogger()
+
+    if verbose:
+        logger = VerboseLogger()
+
     # --- Basic info ---
+
+    logger.StartSection("Basic info")
 
     m, n = matrix.shape
     nnz = matrix.getnnz()
@@ -413,9 +463,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
         + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>",
     )
 
+    logger.FinishSection()
+
     # --- Color image ---
 
     if params.colorParams.enabled:
+        logger.StartSection("Color image")
+
         filepath = imagePrefix + "-px.png"
         pxRows, pxCols = ComputeImageSize(
             params.colorParams.pxRows, params.colorParams.pxCols, m, n
@@ -435,9 +489,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             f'<img class="pixelated" src="{filepath}" />',
         )
 
+        logger.FinishSection()
+
     # --- Shade image ---
 
     if params.shadeParams.enabled:
+        logger.StartSection("Shade image")
+
         filepath = imagePrefix + "-shade.png"
         pxRows, pxCols = ComputeImageSize(
             params.colorParams.pxRows, params.colorParams.pxCols, m, n
@@ -491,9 +549,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>",
         )
 
+        logger.FinishSection()
+
     # --- Scatter image ---
 
     if params.scatterParams.enabled:
+        logger.StartSection("Scatter image")
+
         filepath = imagePrefix + "-scatter.png"
 
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -533,10 +595,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
 
         out.AddFigure("Scatter nonzeros", f'<img src="{filepath}" />')
 
+        logger.FinishSection()
+
     # --- Singular values ---
 
-    singMin, singMax = None, None
     if params.computeSingular:
+        logger.StartSection("Singular values")
+
         filepath = imagePrefix + "-sing.png"
 
         if matrixDense is None:
@@ -576,9 +641,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             + f"k(p=2)  = {cond2:11.4e}<br/>",
         )
 
+        logger.FinishSection()
+
     # --- Condition number ---
 
     elif params.condParams.enabled:
+        logger.StartSection("Condition number")
+
         tol = params.condParams.tol
 
         singMax = scipy.sparse.linalg.svds(
@@ -623,9 +692,13 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>",
         )
 
+        logger.FinishSection()
+
     # --- Spectrum ---
 
     if params.computeSpectrum:
+        logger.StartSection("Spectrum")
+
         filepath = imagePrefix + "-spectrum.png"
 
         if matrixDense is None:
@@ -687,15 +760,21 @@ def CreateLine(matrix: CSRMatrix, params: ReportParams, outDir: str):
             + f"max mult   = {int(maxMult)}",
         )
 
+        logger.FinishSection()
+
     # --- Tail ---
 
-    return out.FormLine()
+    line = out.FormLine()
+    logger.Finish()
+
+    return line
 
 
 def CreateReport(
     matrices: list[ReportParams],
     outDir: str,
     defaultChoiceParams: DefaultChoiceParams = DefaultChoiceParams(),
+    verbose: bool = False,
 ):
     os.makedirs(os.path.join(outDir, IMAGE_DIR), exist_ok=True)
 
@@ -732,7 +811,7 @@ def CreateReport(
             f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[0]}"
         )
 
-        lines = CreateLine(matrixData.matrix, params, outDir)
+        lines = CreateLine(matrixData.matrix, params, outDir, verbose)
 
         output += lines
 
@@ -765,4 +844,5 @@ if __name__ == "__main__":
             ReportParams(matrix=os.path.join(matDir, f), name=f) for f in matFnames
         ],
         outDir=outDir,
+        verbose=True,
     )
