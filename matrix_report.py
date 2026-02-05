@@ -12,9 +12,9 @@ from collections.abc import Callable
 
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
-DEFAULT_MAX = 1e10
 DEFAULT_PX_COLS = 256
 PLOT_MARGIN = 0.01
+FIGURE_PER_ROW_MAX = 2
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -368,17 +368,24 @@ class HTMLOutput:
         self.dataTexts.append(DataText(heading=heading, text=text))
 
     def FormLine(self):
-        figCells = ""
-        for fig in self.figures:
-            figCells += fig.FormFigureText()
+        figRows = "<tr>"
+        for i in range(len(self.figures)):
+            fig = self.figures[i]
+
+            if i > 0 and i % FIGURE_PER_ROW_MAX == 0:
+                figRows += "</tr><tr>"
+            figRows += fig.FormFigureText()
+        figRows += "</tr>"
 
         dataCell = ""
         for d in self.dataTexts:
             dataCell += d.FormDataText()
 
-        dataCell = f"<td><tt><b>{self.name}</b></tt><br/>{dataCell}</td>"
-
-        return f"<tr>{dataCell}{figCells}</tr>"
+        return (
+            f'<tr class="page-break"><td><tt><b>{self.name}</b></tt></td></tr>'
+            + f"<tr><td>{dataCell}</td></tr>"
+            + figRows
+        )
 
 
 class VerboseLogger:
@@ -751,7 +758,7 @@ def CreateLine(
         figN = out.AddFigure("Spectrum", f'<img src="{filepath}" />')
 
         out.AddData(
-            "Spectrum",
+            f"Spectrum (Figure {figN})",
             ""
             + f"real range = ({plotData[:, 0].min():11.4e}, {plotData[:, 0].max():11.4e})<br/>"
             + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].min():11.4e})<br/>"
@@ -787,7 +794,7 @@ def CreateReport(
         + ".pixelated { image-rendering: pixelated; "
         + "image-rendering: -moz-crisp-edges; }\n"
         + "tt { white-space: pre; }\n"
-        + "@media print { .page-break { break-after: page; } }\n"
+        + "@media print { .page-break { break-before: page; } }\n"
         + "</style><body><table>"
     )
 
