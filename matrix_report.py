@@ -9,6 +9,24 @@ from dataclasses import dataclass
 from types import NoneType
 from typing import Literal
 from collections.abc import Callable
+import importlib
+
+
+def jit(f):
+    pass
+
+
+if importlib.util.find_spec("numba") is None:
+    print("WARN: install numba to accelerate some computations")
+
+    def jit(f):
+        return f
+else:
+    import numba
+
+    def jit(f):
+        return numba.njit(f)
+
 
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
@@ -300,6 +318,32 @@ def ComputeImageSize(pxRows_, pxCols_, m, n):
     return pxRows, pxCols
 
 
+@jit
+def FormPxBlockLine(
+    m: int,
+    n: int,
+    rowPtr: np.ndarray,
+    col: np.ndarray,
+    values: np.ndarray,
+    rowPx: np.ndarray,
+    rowPxSize: np.ndarray,
+    iStart: int,
+    iEnd: int,
+    pxCols: int,
+):
+    for p in range(iEnd - iStart):
+        i = iStart + p
+        start = rowPtr[i]
+        end = rowPtr[i + 1]
+        for kk in range(end - start):
+            k = start + kk
+            v = values[k]
+            j = col[k]
+            jb = j * pxCols // n
+            rowPx[jb, rowPxSize[jb]] = v
+            rowPxSize[jb] += 1
+
+
 def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
     m, n = matrix.shape
 
@@ -312,17 +356,18 @@ def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
         iStart = int(math.ceil(ib * m / pxRows))
         iEnd = min(int(math.ceil((ib + 1) * m / pxRows)), m)
 
-        for p in range(iEnd - iStart):
-            i = iStart + p
-            start = matrix.indptr[i]
-            end = matrix.indptr[i + 1]
-            for kk in range(end - start):
-                k = start + kk
-                v = matrix.data[k]
-                j = matrix.indices[k]
-                jb = j * pxCols // n
-                rowPx[jb, rowPxSize[jb]] = v
-                rowPxSize[jb] += 1
+        FormPxBlockLine(
+            m,
+            n,
+            matrix.indptr,
+            matrix.indices,
+            matrix.data,
+            rowPx,
+            rowPxSize,
+            iStart,
+            iEnd,
+            pxCols,
+        )
 
         for jb in range(pxCols):
             r = iEnd - iStart
