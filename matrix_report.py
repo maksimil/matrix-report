@@ -5,18 +5,20 @@ import numpy as np
 import scipy
 from matplotlib import pyplot as plt
 import math
+import dataclasses
 from dataclasses import dataclass
 from types import NoneType
 from typing import Literal
 from collections.abc import Callable
 import importlib
 
+JIT_ENABLED = False
+GRAPH_ENABLED = False
+
 
 def jit(f):
     pass
 
-
-JIT_ENABLED = False
 
 if importlib.util.find_spec("numba") is None:
     print("WARN: install numba to accelerate some computations")
@@ -26,10 +28,20 @@ if importlib.util.find_spec("numba") is None:
 else:
     import numba
 
+    JIT_ENABLED = True
+
     def jit(f):
         return numba.njit(f)
 
-    JIT_ENABLED = True
+
+nx = None
+
+if importlib.util.find_spec("networkx") is None:
+    print("WARN: install networkx to use graph layouts")
+else:
+    import networkx as nx
+
+    GRAPH_ENABLED = True
 
 
 IMAGE_DIR = "matrix-images"
@@ -38,6 +50,7 @@ DEFAULT_PX_COLS = 256
 PLOT_MARGIN = 0.01
 COL_PER_ROW_MAX = 2
 AUTO_INCREASE_INT_SIZE = True
+SEED = 42
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -174,9 +187,28 @@ class BlockParams:
     maxR: int = 16
     maxC: int = 16
 
+    checkRC: list[tuple[int, int]] = dataclasses.field(
+        default_factory=lambda: [(1, 1), (2, 1), (4, 1), (8, 1)]
+    )
+
     cacheSize: int = 64
     floatSize: int = 8
     intSize: int = 4
+
+    def Disabled():
+        return SpectrumParams(enabled=False)
+
+
+def SpringLayout(params, g):
+    if GRAPH_ENABLED:
+        return nx.spring_layout(g, seed=SEED)
+
+
+@dataclass
+class GraphParams:
+    enabled: bool = True
+    tol: float = -1
+    layout = SpringLayout
 
     def Disabled():
         return SpectrumParams(enabled=False)
@@ -196,6 +228,8 @@ class ReportParams:
     spectrumParams: SpectrumParams | NoneType = None
 
     blockParams: BlockParams | NoneType = None
+
+    graphParams: GraphParams | NoneType = None
 
 
 INT_MAX = sys.maxsize
@@ -243,12 +277,16 @@ class DefaultChoiceParams:
     defaultBlockParams: BlockParams = BlockParams()
     limitBlockParams: MatrixLimit = MatrixLimit()
 
+    defaultGraphParams: GraphParams = GraphParams()
+    limitGraphParams: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=5_000)
+
 
 BLOCKS_PRESET = DefaultChoiceParams(
     limitScatter=MatrixLimit.Disabled(),
     limitSingular=MatrixLimit.Disabled(),
     limitCond=MatrixLimit.Disabled(),
     limitSpectrum=MatrixLimit.Disabled(),
+    limitGraphParams=MatrixLimit.Disabled(),
 )
 
 
@@ -374,6 +412,30 @@ def FillDefaultParams(
             while (2 ** (8 * params.blockParams.intSize)) < max(m, n):
                 params.blockParams.intSize *= 2
             print(f"WARN: set intSize={params.blockParams.intSize} bytes")
+
+    if params.graphParams is None:
+        if m == n:
+            params.graphParams = (
+                defaultChoice.defaultGraphParams
+                if defaultChoice.limitGraphParams.IsWithin(matrix) and GRAPH_ENABLED
+                else GraphParams.Disabled()
+            )
+        else:
+            params.graphParams = GraphParams.Disabled()
+
+    if params.graphParams.enabled and not GRAPH_ENABLED:
+        print(
+            f"WARN: will not compute graph layout of {params.name}, "
+            + "since networkx is not installed"
+        )
+        params.graphParams = GraphParams.Disabled()
+
+    if params.graphParams.enabled and m != n:
+        print(
+            f"WARN: will not compute graph layout of {params.name}, "
+            + "since it is not square"
+        )
+        params.graphParams = GraphParams.Disabled()
 
     return params
 
@@ -858,7 +920,7 @@ def CreateLine(
             k=1,
             which="LM",
             tol=tol,
-            random_state=42,
+            random_state=SEED,
             return_singular_vectors=False,
         )
         singMax = singMax[0]
@@ -868,7 +930,7 @@ def CreateLine(
             k=1,
             which="SM",
             tol=tol,
-            random_state=42,
+            random_state=SEED,
             return_singular_vectors=False,
         )
         singMin = singMin[0]
@@ -1030,12 +1092,71 @@ def CreateLine(
 
         figN = out.AddFigure("Blocks", f'<img src="{filepath}" />')
 
+        checkLines = ""
+
+        for r, c in params.blockParams.checkRC:
+            bnd = lowerBounds[r - 1, c - 1]
+            checkLines += f"{r:2d} x {c:2d}: {bnd:11.4e} (+{bnd * 100:8.4f}%)<br/>"
+
         out.AddData(
             f"Blocks (Figure {figN})",
             ""
             + f"Min lower bound at {minR} x {minC}<br/>"
-            + f"          with >{minMiss} misses<br/>",
+            + f"          with >{minMiss:11.4e} misses<br/>"
+            + checkLines,
         )
+
+        logger.FinishSection()
+
+    # --- Graph ---
+
+    if params.graphParams.enabled:
+        logger.StartSection("Graph")
+
+        filepath = imagePrefix + "-graph.png"
+
+        edgelist = np.zeros((nnz, 2))
+        edgelistSize = 0
+        for i in range(m):
+            start = matrix.indptr[i]
+            end = matrix.indptr[i + 1]
+            for kk in range(end - start):
+                k = start + kk
+                j = matrix.indices[k]
+                v = matrix.data[k]
+                if abs(v) > params.graphParams.tol:
+                    edgelist[edgelistSize] = (int(i), int(j))
+                    edgelistSize += 1
+        edgelist = edgelist[:edgelistSize]
+        g = nx.from_edgelist(edgelist)
+        layout = params.graphParams.layout
+        pos = layout(g)
+
+        posArray = np.zeros((2, n))
+
+        for i in range(n):
+            posArray[:, i] = pos[i]
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        ax.scatter(posArray[0], posArray[1], c=np.arange(n), cmap="winter")
+
+        for i1, i2, rest in nx.to_edgelist(g):
+            i1 = int(i1)
+            i2 = int(i2)
+            if i1 != i2:
+                ax.plot(
+                    [posArray[0, i1], posArray[0, i2]],
+                    [posArray[1, i1], posArray[1, i2]],
+                    "k-",
+                )
+
+        ax.set(xticks=[], yticks=[])
+        fig.tight_layout()
+        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+        out.AddFigure("Graph", f'<img src="{filepath}" />')
 
         logger.FinishSection()
 

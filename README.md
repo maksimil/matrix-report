@@ -1,25 +1,26 @@
 # matrix-report
 
-A script for generating html reports of matrices. Report generation computes
-ranges of positive and negative values, sparsity percentage and estimates
-condition number using the umfpack method.
+A python script for automatic creation of html reports on various properties of
+sparse matrices. The script can also be imported and used as a module for more
+complex reports.
 
-A visual representation of the sparsity pattern is also displayed in two ways.
+Supported features:
+- [x] Display of basic info: dimension, sparsity, bandwidth
+- [x] Display of sparsity pattern in different formats
+- [x] Computation and plot of singular values
+- [x] Computation and plot of the spectrum
+- [x] Approximation of condition number for large matrices
+- [x] Bounds on cache misses for blocking storage schemes
+- [ ] Graph display of a matrix
+- [ ] FFT of the matrix to check for better representation
+- [x] Automatic choice of whether to do some of the more
+computationally-intensive reporting (spectrum, singular values) depending on
+problem size
+- [x] PDf-friendly formatting of the html file
 
-**Pixelated image.** An image is generated. If several matrix values lie under
-a single pixel its color is defined the following way. If none of the matrix
-values are mentioned in sparse matrix description as entries, the pixel is
-white. If some of the values are entries but none of the numerical values
-exceed `YELLOW_TOL` (0 by default), the pixel is yellow. If some of them exceed
-`YELLOW_TOL` but none exceed `GREEN_TOL` (1e-16 by default), the pixel is
-green. Otherwise positive and negative values that exceed `GREEN_TOL` are
-summed separately, the sums are normalized separately respectively to global
-maximums of sum for the whole image. Positive sum defines the red component,
-negative sum defines to blue component, green component is zero.
+## Sparsity pattern representation
 
-**Scatter image.** A `matplotlib` plot is generated. A scatter plot with
-semitransparent dots with colors defined by the same procedure as for the
-pixelated image.
+## Usage
 
 For an example run you can use the command
 ```sh
