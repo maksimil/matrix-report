@@ -16,6 +16,8 @@ def jit(f):
     pass
 
 
+JIT_ENABLED = False
+
 if importlib.util.find_spec("numba") is None:
     print("WARN: install numba to accelerate some computations")
 
@@ -27,12 +29,15 @@ else:
     def jit(f):
         return numba.njit(f)
 
+    JIT_ENABLED = True
+
 
 IMAGE_DIR = "matrix-images"
 REPORT_NAME = "index.html"
 DEFAULT_PX_COLS = 256
 PLOT_MARGIN = 0.01
 COL_PER_ROW_MAX = 2
+AUTO_INCREASE_INT_SIZE = True
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -163,6 +168,21 @@ class SpectrumParams:
 
 
 @dataclass
+class BlockParams:
+    enabled: bool = True
+    tol: float = 0
+    maxR: int = 16
+    maxC: int = 16
+
+    cacheSize: int = 64
+    floatSize: int = 8
+    intSize: int = 4
+
+    def Disabled():
+        return SpectrumParams(enabled=False)
+
+
+@dataclass
 class ReportParams:
     matrix: MatrixDescType | MatrixLoader
     name: str | None = None
@@ -174,6 +194,8 @@ class ReportParams:
     singularParams: SingularParams | NoneType = None
     condParams: CondParams | NoneType = None
     spectrumParams: SpectrumParams | NoneType = None
+
+    blockParams: BlockParams | NoneType = None
 
 
 INT_MAX = sys.maxsize
@@ -217,6 +239,17 @@ class DefaultChoiceParams:
 
     defaultSpectrumParams: SpectrumParams = SpectrumParams()
     limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
+
+    defaultBlockParams: BlockParams = BlockParams()
+    limitBlockParams: MatrixLimit = MatrixLimit()
+
+
+BLOCKS_PRESET = DefaultChoiceParams(
+    limitScatter=MatrixLimit.Disabled(),
+    limitSingular=MatrixLimit.Disabled(),
+    limitCond=MatrixLimit.Disabled(),
+    limitSpectrum=MatrixLimit.Disabled(),
+)
 
 
 def LoadMatrix(loader: MatrixDescType | MatrixLoader):
@@ -262,6 +295,8 @@ def FillDefaultParams(
     i: int,
     defaultChoice: DefaultChoiceParams,
 ):
+    m, n = matrix.shape
+
     if params.name is None:
         if retName == "":
             params.name = f"Matrix {i}"
@@ -304,7 +339,7 @@ def FillDefaultParams(
         )
 
     if params.spectrumParams is None:
-        if matrix.shape[0] == matrix.shape[1]:
+        if m == n:
             params.spectrumParams = (
                 defaultChoice.defaultSpectrumParams
                 if defaultChoice.limitSpectrum.IsWithin(matrix)
@@ -313,12 +348,33 @@ def FillDefaultParams(
         else:
             params.spectrumParams = SpectrumParams.Disabled()
 
-    if params.spectrumParams.enabled and matrix.shape[0] != matrix.shape[1]:
+    if params.spectrumParams.enabled and m != n:
         print(
             f"WARN: will not compute spectrum of {params.name}, "
             + "since it is not square"
         )
         params.spectrumParams = SpectrumParams.Disabled()
+
+    if params.blockParams is None:
+        params.blockParams = (
+            defaultChoice.defaultBlockParams
+            if defaultChoice.limitBlockParams.IsWithin(matrix)
+            else BlockParams.Disabled()
+        )
+
+    if params.blockParams.enabled and (2 ** (8 * params.blockParams.intSize)) < max(
+        m, n
+    ):
+        print(
+            f"WARN: intSize={params.blockParams.intSize} bytes could not "
+            + f"fit indices of a {m} x {n} matrix"
+        )
+
+        if AUTO_INCREASE_INT_SIZE:
+            while (2 ** (8 * params.blockParams.intSize)) < max(m, n):
+                params.blockParams.intSize *= 2
+            print(f"WARN: set intSize={params.blockParams.intSize} bytes")
+
     return params
 
 
@@ -398,6 +454,56 @@ def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
             jEnd = min(int(math.ceil((jb + 1) * n / pxCols)), n)
             c = jEnd - jStart
             process(ib, jb, r, c, rowPx[jb, : rowPxSize[jb]])
+
+
+@jit
+def CountKrc(
+    m: int,
+    n: int,
+    rowPtr: np.ndarray,
+    col: np.ndarray,
+    values: np.ndarray,
+    tol: float,
+    maxR: int,
+    maxC: int,
+):
+    krc = np.zeros((maxR, maxC))
+    masks = np.zeros((maxR, maxC, n))
+
+    lists = np.zeros((maxR, maxC, n))
+    sizes = np.zeros((maxR, maxC))
+
+    for i in range(m):
+        start = rowPtr[i]
+        end = rowPtr[i + 1]
+
+        for rm in range(maxR):
+            r = rm + 1
+            if i % r == 0:
+                for cm in range(maxC):
+                    for k in range(int(sizes[rm, cm])):
+                        masks[rm, cm, int(lists[rm, cm, k])] = 0
+                    sizes[rm, cm] = 0
+
+        for kk in range(end - start):
+            k = start + kk
+            j = col[k]
+            v = values[k]
+
+            if abs(v) <= tol:
+                continue
+
+            for rm in range(maxR):
+                for cm in range(maxC):
+                    jb = j // (cm + 1)
+
+                    if masks[rm, cm, jb] == 0:
+                        lists[rm, cm, int(sizes[rm, cm])] = jb
+                        masks[rm, cm, jb] = 1
+                        krc[rm, cm] += 1
+                        sizes[rm, cm] += 1
+
+    return krc
 
 
 @dataclass
@@ -838,7 +944,7 @@ def CreateLine(
 
         fig.tight_layout()
         fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
-        plt.close()
+        plt.close(fig)
 
         absArr = np.zeros(uniqueValues)
 
@@ -855,6 +961,80 @@ def CreateLine(
             + f"abs  range = ({absArr.min():11.4e}, {absArr.max():11.4e})<br/>"
             + f"real l     = {realCount} ({realCount / n * 100:8.4f}%)<br/>"
             + f"max mult   = {int(maxMult)}<br/>",
+        )
+
+        logger.FinishSection()
+
+    # --- Block ---
+
+    if params.blockParams.enabled:
+        logger.StartSection("Block")
+
+        filepath = imagePrefix + "-block.png"
+
+        maxR = params.blockParams.maxR
+        maxC = params.blockParams.maxC
+        krc = CountKrc(
+            m,
+            n,
+            matrix.indptr,
+            matrix.indices,
+            matrix.data,
+            params.blockParams.tol,
+            maxR,
+            maxC,
+        )
+
+        lowerBounds = np.zeros((maxR, maxC))
+        sc = params.blockParams.cacheSize
+        sf = params.blockParams.floatSize
+        si = params.blockParams.intSize
+
+        for rm in range(maxR):
+            for cm in range(maxC):
+                r = rm + 1
+                c = cm + 1
+                bnnz = krc[rm, cm]
+
+                lowerBounds[rm, cm] = (
+                    bnnz * (r * c * sf + si)
+                    + ((m + r - 1) // r + 1) * si
+                    + m * sf
+                    + n * sf
+                ) / sc
+
+        idx = np.argmin(lowerBounds)
+        rm, cm = np.unravel_index(idx, lowerBounds.shape)
+        minR = rm + 1
+        minC = cm + 1
+        minMiss = lowerBounds[rm, cm]
+
+        lowerBounds = lowerBounds / minMiss - 1
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        ims = ax.imshow(
+            lowerBounds,
+            cmap="magma",
+            extent=(0.5, maxR + 0.5, 0.5, maxC + 0.5),
+            origin="lower",
+        )
+
+        ax.set(xlabel="Block cols", ylabel="Block rows")
+        ax.invert_yaxis()
+
+        fig.colorbar(ims, shrink=0.7)
+        fig.tight_layout()
+        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+        figN = out.AddFigure("Blocks", f'<img src="{filepath}" />')
+
+        out.AddData(
+            f"Blocks (Figure {figN})",
+            ""
+            + f"Min lower bound at {minR} x {minC}<br/>"
+            + f"          with >{minMiss} misses<br/>",
         )
 
         logger.FinishSection()
@@ -941,6 +1121,7 @@ if __name__ == "__main__":
         matrices=[
             ReportParams(matrix=os.path.join(matDir, f), name=f) for f in matFnames
         ],
+        #  defaultChoiceParams=BLOCKS_PRESET,
         outDir=outDir,
         verbose=True,
     )
