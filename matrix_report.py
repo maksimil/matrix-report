@@ -419,26 +419,29 @@ def CountKrc(
     col: np.ndarray,
     values: np.ndarray,
     tol: float,
-    maxR: int,
-    maxC: int,
+    rList: list[int],
+    cList: list[int],
 ):
-    krc = np.zeros((maxR, maxC))
-    masks = np.zeros((maxR, maxC, n))
+    kr = len(rList)
+    kc = len(cList)
 
-    lists = np.zeros((maxR, maxC, n))
-    sizes = np.zeros((maxR, maxC))
+    krc = np.zeros((kr, kc))
+
+    masks = np.zeros((kr, kc, n))
+    lists = np.zeros((kr, kc, n))
+    sizes = np.zeros((kr, kc))
 
     for i in range(m):
         start = rowPtr[i]
         end = rowPtr[i + 1]
 
-        for rm in range(maxR):
-            r = rm + 1
+        for ir in range(kr):
+            r = rList[ir]
             if i % r == 0:
-                for cm in range(maxC):
-                    for k in range(int(sizes[rm, cm])):
-                        masks[rm, cm, int(lists[rm, cm, k])] = 0
-                    sizes[rm, cm] = 0
+                for ic in range(kc):
+                    for k in range(int(sizes[ir, ic])):
+                        masks[ir, ic, int(lists[ir, ic, k])] = 0
+                    sizes[ir, ic] = 0
 
         for kk in range(end - start):
             k = start + kk
@@ -448,15 +451,16 @@ def CountKrc(
             if abs(v) <= tol:
                 continue
 
-            for rm in range(maxR):
-                for cm in range(maxC):
-                    jb = j // (cm + 1)
+            for ir in range(kr):
+                for ic in range(kc):
+                    jb = j // cList[ic]
 
-                    if masks[rm, cm, jb] == 0:
-                        lists[rm, cm, int(sizes[rm, cm])] = jb
-                        masks[rm, cm, jb] = 1
-                        krc[rm, cm] += 1
-                        sizes[rm, cm] += 1
+                    if masks[ir, ic, jb] == 0:
+                        lists[ir, ic, int(sizes[ir, ic])] = jb
+                        krc[ir, ic] += 1
+                        sizes[ir, ic] += 1
+
+                    masks[ir, ic, jb] += 1
 
     return krc
 
@@ -966,8 +970,8 @@ def CreateLine(
             matrix.indices,
             matrix.data,
             params.blockParams.tol,
-            maxR,
-            maxC,
+            [k + 1 for k in range(maxR)],
+            [k + 1 for k in range(maxC)],
         )
 
         misses = np.zeros((maxR, maxC))
