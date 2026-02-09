@@ -22,6 +22,8 @@ PLOT_MARGIN = 0.01
 COL_PER_ROW_MAX = 2
 AUTO_INCREASE_INT_SIZE = True
 SEED = 42
+PLOT_DPI = 200
+MIN_PNG_SIZE = 1024
 
 # -----------------------------
 # --- Optional dependencies ---
@@ -390,6 +392,25 @@ def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
             process(ib, jb, r, c, rowPx[jb, : rowPxSize[jb]])
 
 
+def SaveImage(path, data):
+    m = data.shape[0]
+    n = data.shape[1]
+    t = int(np.ceil(MIN_PNG_SIZE / min(m, n)))
+
+    multMat = np.zeros((t, t, 1))
+    for i in range(t):
+        for j in range(t):
+            multMat[i, j, 0] = 1
+
+    imageData = np.kron(data, multMat)
+
+    plt.imsave(path, imageData)
+
+
+def SaveFig(path, fig):
+    fig.savefig(path, dpi=PLOT_DPI, bbox_inches="tight")
+
+
 @jit
 def CountKrc(
     m: int,
@@ -630,7 +651,7 @@ def CreateLine(
 
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
 
-        plt.imsave(os.path.join(outDir, filepath), imageData)
+        SaveImage(os.path.join(outDir, filepath), imageData)
 
         out.AddFigure(
             "Color image",
@@ -683,7 +704,7 @@ def CreateLine(
                     color = white + (black - white) * z
                 imageData[ib, jb] = color
 
-        plt.imsave(os.path.join(outDir, filepath), imageData)
+        SaveImage(os.path.join(outDir, filepath), imageData)
 
         figN = out.AddFigure(
             "Shade image", f'<img class="pixelated" src="{filepath}" />'
@@ -738,7 +759,7 @@ def CreateLine(
 
         ax.invert_yaxis()
         fig.tight_layout()
-        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
         out.AddFigure("Scatter nonzeros", f'<img src="{filepath}" />')
@@ -767,7 +788,7 @@ def CreateLine(
         ax.set(yscale="log")
 
         fig.tight_layout()
-        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
         singMin = singularValues[-1]
@@ -907,7 +928,7 @@ def CreateLine(
         ax.set(xlabel="Real", ylabel="Imaginary")
 
         fig.tight_layout()
-        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
         absArr = np.zeros(uniqueValues)
@@ -989,7 +1010,8 @@ def CreateLine(
 
         fig.colorbar(ims, shrink=0.7)
         fig.tight_layout()
-        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+
+        SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
         figN = out.AddFigure("Blocks", f'<img src="{filepath}" />')
@@ -1056,7 +1078,7 @@ def CreateLine(
 
         ax.set(xticks=[], yticks=[])
         fig.tight_layout()
-        fig.savefig(os.path.join(outDir, filepath), dpi=200, bbox_inches="tight")
+        SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
         out.AddFigure("Graph", f'<img src="{filepath}" />')
