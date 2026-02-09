@@ -12,8 +12,26 @@ from typing import Literal
 from collections.abc import Callable
 import importlib
 
+# -------------------------
+# --- Global parameters ---
+
+IMAGE_DIR = "matrix-images"
+REPORT_NAME = "index.html"
+DEFAULT_PX_COLS = 256
+PLOT_MARGIN = 0.01
+COL_PER_ROW_MAX = 2
+AUTO_INCREASE_INT_SIZE = True
+SEED = 42
+
+# -----------------------------
+# --- Optional dependencies ---
+
 JIT_ENABLED = False
 GRAPH_ENABLED = False
+
+# Numba
+
+numba = None
 
 
 def jit(f):
@@ -31,8 +49,9 @@ else:
     JIT_ENABLED = True
 
     def jit(f):
-        return numba.njit(f)
+        return numba.njit(f, cache=True)
 
+# NetworkX
 
 nx = None
 
@@ -43,14 +62,8 @@ else:
 
     GRAPH_ENABLED = True
 
-
-IMAGE_DIR = "matrix-images"
-REPORT_NAME = "index.html"
-DEFAULT_PX_COLS = 256
-PLOT_MARGIN = 0.01
-COL_PER_ROW_MAX = 2
-AUTO_INCREASE_INT_SIZE = True
-SEED = 42
+# --------------
+# --- Report ---
 
 CSRMatrix = scipy.sparse.csr_matrix
 
@@ -232,212 +245,71 @@ class ReportParams:
     graphParams: GraphParams | NoneType = None
 
 
-INT_MAX = sys.maxsize
-
-
-@dataclass
-class MatrixLimit:
-    maxM: int = INT_MAX
-    maxN: int = INT_MAX
-    maxNNZ: int = INT_MAX
-
-    def Square(n: int = INT_MAX, nnz: int = INT_MAX):
-        return MatrixLimit(maxM=n, maxN=n, maxNNZ=nnz)
-
-    def Disabled():
-        return MatrixLimit(maxNNZ=-1)
-
-    def IsWithin(self, matrix: CSRMatrix):
-        n, m = matrix.shape
-        nnz = matrix.getnnz()
-
-        return n <= self.maxN and m <= self.maxM and nnz <= self.maxNNZ
-
-
-@dataclass
-class DefaultChoiceParams:
-    defaultColorParams: ColorParams = ColorParams()
-    limitColor: MatrixLimit = MatrixLimit()
-
-    defaultShadeParams: ShadeParams = ShadeParams()
-    limitShade: MatrixLimit = MatrixLimit()
-
-    defaultScatterParams: ScatterParams = ScatterParams()
-    limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
-
-    defaultSingularParams: SingularParams = SingularParams()
-    limitSingular: MatrixLimit = MatrixLimit.Square(n=10_000)
-
-    defaultCondParams: CondParams = CondParams()
-    limitCond: MatrixLimit = MatrixLimit(maxNNZ=100_000)
-
-    defaultSpectrumParams: SpectrumParams = SpectrumParams()
-    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
-
-    defaultBlockParams: BlockParams = BlockParams()
-    limitBlockParams: MatrixLimit = MatrixLimit()
-
-    defaultGraphParams: GraphParams = GraphParams()
-    limitGraphParams: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=5_000)
-
-
-BLOCKS_PRESET = DefaultChoiceParams(
-    limitScatter=MatrixLimit.Disabled(),
-    limitSingular=MatrixLimit.Disabled(),
-    limitCond=MatrixLimit.Disabled(),
-    limitSpectrum=MatrixLimit.Disabled(),
-    limitGraphParams=MatrixLimit.Disabled(),
-)
-
-
-def LoadMatrix(loader: MatrixDescType | MatrixLoader):
-    if callable(loader):
-        return LoadMatrix(loader())
-
-    if type(loader) is NamedMatrixPath:
-        path = loader.path
-        name = loader.name
-
-        mat = None
-
-        if path.endswith(".mtx"):
-            mat = scipy.io.mmread(path).tocsr()
-
-        if path.endswith(".npz"):
-            data = np.load(path)
-            m = int(data["nrows"][0])
-            n = int(data["ncols"][0])
-            mat = CSRMatrix(
-                (data["values"], data["col_indices"], data["row_ptr"]),
-                shape=(m, n),
-            )
-
-        return LoadMatrix(NamedCSRMatrix(matrix=mat, name=name))
-
-    if type(loader) is str:
-        return LoadMatrix(NamedMatrixPath(path=loader, name=loader))
-
-    if type(loader) is CSRMatrix:
-        return LoadMatrix(NamedCSRMatrix(matrix=loader, name=""))
-
-    if type(loader) is NamedCSRMatrix:
-        return loader
-
-    return None
-
-
-def FillDefaultParams(
-    params: ReportParams,
-    matrix: CSRMatrix,
-    retName: str | None,
-    i: int,
-    defaultChoice: DefaultChoiceParams,
+@jit
+def ComputeSymmetry(
+    m: int,
+    n: int,
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    values: np.ndarray,
 ):
-    m, n = matrix.shape
+    loCnt = 0
+    upCnt = 0
+    strCnt = 0
+    numCnt = 0
+    pairsCnt = 0
 
-    if params.name is None:
-        if retName == "":
-            params.name = f"Matrix {i}"
-        else:
-            params.name = retName
+    for i in range(m):
+        start = indptr[i]
+        end = indptr[i + 1]
 
-    if params.colorParams is None:
-        params.colorParams = (
-            defaultChoice.defaultColorParams
-            if defaultChoice.limitColor.IsWithin(matrix)
-            else ColorParams.Disabled()
-        )
+        for kk in range(end - start):
+            k = start + kk
+            j = indices[k]
+            v = values[k]
 
-    if params.shadeParams is None:
-        params.shadeParams = (
-            defaultChoice.defaultShadeParams
-            if defaultChoice.limitShade.IsWithin(matrix)
-            else ShadeParams.Disabled()
-        )
+            if i == j:
+                continue
 
-    if params.scatterParams is None:
-        params.scatterParams = (
-            defaultChoice.defaultScatterParams
-            if defaultChoice.limitScatter.IsWithin(matrix)
-            else ScatterParams.Disabled()
-        )
+            jStart = indptr[j]
+            jEnd = indptr[j + 1]
+            kSymm = np.searchsorted(indices[jStart:jEnd], i) + jStart
+            vSymm = np.nan
+            if kSymm >= jStart and kSymm < jEnd and indices[kSymm] == i:
+                vSymm = values[kSymm]
 
-    if params.singularParams is None:
-        params.singularParams = (
-            defaultChoice.defaultSingularParams
-            if defaultChoice.limitSingular.IsWithin(matrix)
-            else SingularParams.Disabled()
-        )
+            if np.isnan(vSymm):
+                pairsCnt += 1
+                if j < i:
+                    loCnt += 1
+                else:
+                    upCnt += 1
+            else:
+                if j < i:
+                    pairsCnt += 1
+                    strCnt += 1
+                    if v == vSymm:
+                        numCnt += 1
 
-    if params.condParams is None:
-        params.condParams = (
-            defaultChoice.defaultCondParams
-            if defaultChoice.limitCond.IsWithin(matrix)
-            else CondParams.Disabled()
-        )
+    loCnt = loCnt / pairsCnt * 100
+    upCnt = upCnt / pairsCnt * 100
+    strCnt = strCnt / pairsCnt * 100
+    numCnt = numCnt / pairsCnt * 100
 
-    if params.spectrumParams is None:
-        if m == n:
-            params.spectrumParams = (
-                defaultChoice.defaultSpectrumParams
-                if defaultChoice.limitSpectrum.IsWithin(matrix)
-                else SpectrumParams.Disabled()
-            )
-        else:
-            params.spectrumParams = SpectrumParams.Disabled()
+    return loCnt, strCnt, numCnt, upCnt
 
-    if params.spectrumParams.enabled and m != n:
-        print(
-            f"WARN: will not compute spectrum of {params.name}, "
-            + "since it is not square"
-        )
-        params.spectrumParams = SpectrumParams.Disabled()
 
-    if params.blockParams is None:
-        params.blockParams = (
-            defaultChoice.defaultBlockParams
-            if defaultChoice.limitBlockParams.IsWithin(matrix)
-            else BlockParams.Disabled()
-        )
+def FormatBytes(nbytes):
+    log2 = np.log2(nbytes)
 
-    if params.blockParams.enabled and (2 ** (8 * params.blockParams.intSize)) < max(
-        m, n
-    ):
-        print(
-            f"WARN: intSize={params.blockParams.intSize} bytes could not "
-            + f"fit indices of a {m} x {n} matrix"
-        )
-
-        if AUTO_INCREASE_INT_SIZE:
-            while (2 ** (8 * params.blockParams.intSize)) < max(m, n):
-                params.blockParams.intSize *= 2
-            print(f"WARN: set intSize={params.blockParams.intSize} bytes")
-
-    if params.graphParams is None:
-        if m == n:
-            params.graphParams = (
-                defaultChoice.defaultGraphParams
-                if defaultChoice.limitGraphParams.IsWithin(matrix) and GRAPH_ENABLED
-                else GraphParams.Disabled()
-            )
-        else:
-            params.graphParams = GraphParams.Disabled()
-
-    if params.graphParams.enabled and not GRAPH_ENABLED:
-        print(
-            f"WARN: will not compute graph layout of {params.name}, "
-            + "since networkx is not installed"
-        )
-        params.graphParams = GraphParams.Disabled()
-
-    if params.graphParams.enabled and m != n:
-        print(
-            f"WARN: will not compute graph layout of {params.name}, "
-            + "since it is not square"
-        )
-        params.graphParams = GraphParams.Disabled()
-
-    return params
+    if log2 <= 9:
+        return nbytes, "b"
+    elif log2 <= 19:
+        return nbytes / (2**10), "Kb"
+    elif log2 <= 29:
+        return nbytes / (2**20), "Mb"
+    else:
+        return nbytes / (2**30), "Gb"
 
 
 def ComputeImageSize(pxRows_, pxCols_, m, n):
@@ -649,6 +521,7 @@ class HTMLOutput:
 class VerboseLogger:
     startTime: float
     sectionTime: float
+    sectionName: float
     verbose: bool
 
     def __init__(self):
@@ -656,17 +529,17 @@ class VerboseLogger:
 
     def StartSection(self, name):
         self.sectionTime = time.perf_counter()
-        print(f"-> {name}")
+        self.sectionName = name
 
     def FinishSection(self):
         now = time.perf_counter()
         ela = now - self.sectionTime
-        print(f"   ({ela:6.2f} s)")
+        print(f"-> {self.sectionName:20s} ({ela:6.2f} s)")
 
     def Finish(self):
         now = time.perf_counter()
         ela = now - self.startTime
-        print(f"Finished all ({ela:6.2f} s)")
+        print(f"{'Finished all':23s} ({ela:6.2f} s)")
 
 
 class NoLogger:
@@ -718,6 +591,13 @@ def CreateLine(
 
     bandLower, bandUpper = scipy.sparse.linalg.spbandwidth(matrix)
 
+    lo, struc, numeric, up = ComputeSymmetry(
+        m, n, matrix.indptr, matrix.indices, matrix.data
+    )
+
+    csrSize, csrSizeUnits = FormatBytes(nnz * (8 + 4) + m * 4)
+    denseSize, denseSizeUnits = FormatBytes(n * m * 8)
+
     out = HTMLOutput(params.name)
 
     out.AddData(
@@ -725,7 +605,10 @@ def CreateLine(
         f"{m} x {n}, nnz = {nnz} ({sparsity:8.4f}%)<br/>"
         + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
         + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
-        + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>",
+        + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>"
+        + f"symmetry =<br/>{lo:8.4f}% / {struc:8.4f}% ({numeric:8.4f}%) / {up:8.4f}%<br/>"
+        + f"size as CSR   = {csrSize:8.4f} {csrSizeUnits}<br/>"
+        + f"size as Dense = {denseSize:8.4f} {denseSizeUnits}<br/>",
     )
 
     logger.FinishSection()
@@ -915,25 +798,41 @@ def CreateLine(
 
         tol = params.condParams.tol
 
-        singMax = scipy.sparse.linalg.svds(
-            matrix,
-            k=1,
-            which="LM",
-            tol=tol,
-            random_state=SEED,
-            return_singular_vectors=False,
-        )
-        singMax = singMax[0]
+        singMin, singMax = np.nan, np.nan
 
-        singMin = scipy.sparse.linalg.svds(
-            matrix,
-            k=1,
-            which="SM",
-            tol=tol,
-            random_state=SEED,
-            return_singular_vectors=False,
-        )
-        singMin = singMin[0]
+        if m * n * 8 <= 2**30:  # Limit dense matrix to 1Gb
+            if matrixDense is None:
+                matrixDense = matrix.todense()
+            singMin = np.linalg.norm(matrixDense, ord=-2)
+            singMax = np.linalg.norm(matrixDense, ord=2)
+        else:
+            try:
+                singMax = scipy.sparse.linalg.svds(
+                    matrix,
+                    k=1,
+                    which="LM",
+                    tol=tol,
+                    random_state=SEED,
+                    return_singular_vectors=False,
+                )
+                singMax = singMax[0]
+
+                singMin = scipy.sparse.linalg.svds(
+                    matrix,
+                    k=1,
+                    which="SM",
+                    tol=tol,
+                    random_state=SEED,
+                    return_singular_vectors=False,
+                )
+                singMin = singMin[0]
+            except Exception as e:
+                print(
+                    "WARN: did not compute condition number because "
+                    "of the following exception:"
+                )
+                print(e)
+                singMin, singMax = np.nan, np.nan
 
         cond2 = None
         if abs(singMin) < 1e-16:
@@ -949,13 +848,16 @@ def CreateLine(
 
         cond2Min = (singMax - tol) / (singMin + tol)
 
-        out.AddData(
-            "Approximate singular values",
-            ""
-            + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
-            + f"          ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
-            + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>",
-        )
+        if np.isnan(singMin):
+            out.AddData("Approximate conditioning", "Did not compute")
+        else:
+            out.AddData(
+                "Approximate conditioning",
+                ""
+                + f"s range = ({singMin:11.4e}, {singMax:11.4e})<br/>"
+                + f"          ({singMin - tol:11.4e}, {singMax + tol:11.4e})<br/>"
+                + f"k(p=2)  = {cond2:11.4e} ({cond2Min:11.4e}, {cond2Max:11.4e})<br/>",
+            )
 
         logger.FinishSection()
 
@@ -1047,7 +949,7 @@ def CreateLine(
             maxC,
         )
 
-        lowerBounds = np.zeros((maxR, maxC))
+        misses = np.zeros((maxR, maxC))
         sc = params.blockParams.cacheSize
         sf = params.blockParams.floatSize
         si = params.blockParams.intSize
@@ -1058,25 +960,25 @@ def CreateLine(
                 c = cm + 1
                 bnnz = krc[rm, cm]
 
-                lowerBounds[rm, cm] = (
+                misses[rm, cm] = (
                     bnnz * (r * c * sf + si)
                     + ((m + r - 1) // r + 1) * si
                     + m * sf
                     + n * sf
                 ) / sc
 
-        idx = np.argmin(lowerBounds)
-        rm, cm = np.unravel_index(idx, lowerBounds.shape)
+        idx = np.argmin(misses)
+        rm, cm = np.unravel_index(idx, misses.shape)
         minR = rm + 1
         minC = cm + 1
-        minMiss = lowerBounds[rm, cm]
+        minMiss = misses[rm, cm]
 
-        lowerBounds = lowerBounds / minMiss - 1
+        improve = misses / minMiss - 1
 
         fig, ax = plt.subplots(figsize=(8, 8))
 
         ims = ax.imshow(
-            lowerBounds,
+            improve,
             cmap="magma",
             extent=(0.5, maxR + 0.5, 0.5, maxC + 0.5),
             origin="lower",
@@ -1095,8 +997,9 @@ def CreateLine(
         checkLines = ""
 
         for r, c in params.blockParams.checkRC:
-            bnd = lowerBounds[r - 1, c - 1]
-            checkLines += f"{r:2d} x {c:2d}: {bnd:11.4e} (+{bnd * 100:8.4f}%)<br/>"
+            bnd = misses[r - 1, c - 1]
+            imp = improve[r - 1, c - 1]
+            checkLines += f"{r:2d} x {c:2d}: {bnd:11.4e} (+{imp * 100:8.4f}%)<br/>"
 
         out.AddData(
             f"Blocks (Figure {figN})",
@@ -1166,6 +1069,221 @@ def CreateLine(
     logger.Finish()
 
     return line
+
+
+# ----------------------
+# --- Default choice ---
+
+INT_MAX = sys.maxsize
+
+
+@dataclass
+class MatrixLimit:
+    maxM: int = INT_MAX
+    maxN: int = INT_MAX
+    maxNNZ: int = INT_MAX
+
+    def Square(n: int = INT_MAX, nnz: int = INT_MAX):
+        return MatrixLimit(maxM=n, maxN=n, maxNNZ=nnz)
+
+    def Disabled():
+        return MatrixLimit(maxNNZ=-1)
+
+    def IsWithin(self, matrix: CSRMatrix):
+        n, m = matrix.shape
+        nnz = matrix.getnnz()
+
+        return n <= self.maxN and m <= self.maxM and nnz <= self.maxNNZ
+
+
+@dataclass
+class DefaultChoiceParams:
+    defaultColorParams: ColorParams = ColorParams()
+    limitColor: MatrixLimit = MatrixLimit()
+
+    defaultShadeParams: ShadeParams = ShadeParams()
+    limitShade: MatrixLimit = MatrixLimit()
+
+    defaultScatterParams: ScatterParams = ScatterParams()
+    limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
+
+    defaultSingularParams: SingularParams = SingularParams()
+    limitSingular: MatrixLimit = MatrixLimit.Square(n=1_000)
+
+    defaultCondParams: CondParams = CondParams()
+    limitCond: MatrixLimit = MatrixLimit(maxNNZ=10_000)
+
+    defaultSpectrumParams: SpectrumParams = SpectrumParams()
+    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
+
+    defaultBlockParams: BlockParams = BlockParams()
+    limitBlockParams: MatrixLimit = MatrixLimit()
+
+    defaultGraphParams: GraphParams = GraphParams()
+    limitGraphParams: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=10_000)
+
+
+BLOCKS_PRESET = DefaultChoiceParams(
+    limitScatter=MatrixLimit.Disabled(),
+    limitSingular=MatrixLimit.Disabled(),
+    limitCond=MatrixLimit.Disabled(),
+    limitSpectrum=MatrixLimit.Disabled(),
+    limitGraphParams=MatrixLimit.Disabled(),
+)
+
+
+def LoadMatrix(loader: MatrixDescType | MatrixLoader):
+    if callable(loader):
+        return LoadMatrix(loader())
+
+    if type(loader) is NamedMatrixPath:
+        path = loader.path
+        name = loader.name
+
+        mat = None
+
+        if path.endswith(".mtx"):
+            mat = scipy.io.mmread(path).tocsr()
+
+        if path.endswith(".npz"):
+            data = np.load(path)
+            m = int(data["nrows"][0])
+            n = int(data["ncols"][0])
+            mat = CSRMatrix(
+                (data["values"], data["col_indices"], data["row_ptr"]),
+                shape=(m, n),
+            )
+
+        return LoadMatrix(NamedCSRMatrix(matrix=mat, name=name))
+
+    if type(loader) is str:
+        return LoadMatrix(NamedMatrixPath(path=loader, name=loader))
+
+    if type(loader) is CSRMatrix:
+        return LoadMatrix(NamedCSRMatrix(matrix=loader, name=""))
+
+    if type(loader) is NamedCSRMatrix:
+        return loader
+
+    return None
+
+
+def FillDefaultParams(
+    params: ReportParams,
+    matrix: CSRMatrix,
+    retName: str | None,
+    i: int,
+    defaultChoice: DefaultChoiceParams,
+):
+    m, n = matrix.shape
+
+    if params.name is None:
+        if retName == "":
+            params.name = f"Matrix {i}"
+        else:
+            params.name = retName
+
+    if params.colorParams is None:
+        params.colorParams = (
+            defaultChoice.defaultColorParams
+            if defaultChoice.limitColor.IsWithin(matrix)
+            else ColorParams.Disabled()
+        )
+
+    if params.shadeParams is None:
+        params.shadeParams = (
+            defaultChoice.defaultShadeParams
+            if defaultChoice.limitShade.IsWithin(matrix)
+            else ShadeParams.Disabled()
+        )
+
+    if params.scatterParams is None:
+        params.scatterParams = (
+            defaultChoice.defaultScatterParams
+            if defaultChoice.limitScatter.IsWithin(matrix)
+            else ScatterParams.Disabled()
+        )
+
+    if params.singularParams is None:
+        params.singularParams = (
+            defaultChoice.defaultSingularParams
+            if defaultChoice.limitSingular.IsWithin(matrix)
+            else SingularParams.Disabled()
+        )
+
+    if params.condParams is None:
+        params.condParams = (
+            defaultChoice.defaultCondParams
+            if defaultChoice.limitCond.IsWithin(matrix)
+            else CondParams.Disabled()
+        )
+
+    if params.spectrumParams is None:
+        if m == n:
+            params.spectrumParams = (
+                defaultChoice.defaultSpectrumParams
+                if defaultChoice.limitSpectrum.IsWithin(matrix)
+                else SpectrumParams.Disabled()
+            )
+        else:
+            params.spectrumParams = SpectrumParams.Disabled()
+
+    if params.spectrumParams.enabled and m != n:
+        print(
+            f"WARN: will not compute spectrum of {params.name}, "
+            + "since it is not square"
+        )
+        params.spectrumParams = SpectrumParams.Disabled()
+
+    if params.blockParams is None:
+        params.blockParams = (
+            defaultChoice.defaultBlockParams
+            if defaultChoice.limitBlockParams.IsWithin(matrix)
+            else BlockParams.Disabled()
+        )
+
+    if params.blockParams.enabled and (2 ** (8 * params.blockParams.intSize)) < max(
+        m, n
+    ):
+        print(
+            f"WARN: intSize={params.blockParams.intSize} bytes could not "
+            + f"fit indices of a {m} x {n} matrix"
+        )
+
+        if AUTO_INCREASE_INT_SIZE:
+            while (2 ** (8 * params.blockParams.intSize)) < max(m, n):
+                params.blockParams.intSize *= 2
+            print(f"WARN: set intSize={params.blockParams.intSize} bytes")
+
+    if params.graphParams is None:
+        if m == n:
+            params.graphParams = (
+                defaultChoice.defaultGraphParams
+                if defaultChoice.limitGraphParams.IsWithin(matrix) and GRAPH_ENABLED
+                else GraphParams.Disabled()
+            )
+        else:
+            params.graphParams = GraphParams.Disabled()
+
+    if params.graphParams.enabled and not GRAPH_ENABLED:
+        print(
+            f"WARN: will not compute graph layout of {params.name}, "
+            + "since networkx is not installed"
+        )
+        params.graphParams = GraphParams.Disabled()
+
+    if params.graphParams.enabled and m != n:
+        print(
+            f"WARN: will not compute graph layout of {params.name}, "
+            + "since it is not square"
+        )
+        params.graphParams = GraphParams.Disabled()
+
+    return params
+
+
+# -------------------
+# --- Entrypoints ---
 
 
 def CreateReport(

@@ -11,12 +11,14 @@ Supported features:
 - [x] Computation and plot of the spectrum
 - [x] Approximation of condition number for large matrices
 - [x] Bounds on cache misses for blocking storage schemes
-- [ ] Graph display of a matrix
-- [ ] FFT of the matrix to check for better representation
+- [x] Graph display of a matrix
 - [x] Automatic choice of whether to do some of the more
 computationally-intensive reporting (spectrum, singular values) depending on
 problem size
 - [x] PDf-friendly formatting of the html file
+- [ ] Simple API to generate matrices out of existing ones (transformations)
+- [ ] FFT of the matrix to check for better representation
+- [ ] Different standard permutations
 
 ## Sparsity pattern representation
 
