@@ -3,8 +3,10 @@ import time
 import os
 import numpy as np
 import scipy
+import matplotlib
 from matplotlib import pyplot as plt
-import matplotlib.animation as animation
+import multiprocessing
+import itertools
 import math
 import dataclasses
 from dataclasses import dataclass
@@ -54,14 +56,19 @@ else:
     def jit(f):
         return numba.njit(f, cache=True)
 
-# NetworkX
+# Graph
 
 nx = None
+PIL = None
+aggdraw = None
 
 if importlib.util.find_spec("networkx") is None:
-    print("WARN: install networkx to use graph layouts")
+    print("WARN: install networkx, PIL and aggdraw to use graph layouts")
 else:
     import networkx as nx
+    import PIL
+    import PIL.Image
+    import aggdraw
 
     GRAPH_ENABLED = True
 
@@ -226,9 +233,9 @@ class GraphParams:
     tol: float = -1
     layout = SpringLayout
 
-    enableAnimation: bool = False
-    animationFrames: int = 20
-    animationFps: int = 10
+    enableAnimation: bool = True
+    animationFrames: int = 30
+    animationDuration: float = 100
 
     def Disabled():
         return SpectrumParams(enabled=False)
@@ -496,6 +503,59 @@ def ViewMatrix(rotation: float):
     view = proj @ rot
 
     return view
+
+
+# posArray should be normalized to [0,1]
+def CreateGraphImage(graph, floatPosArray):
+    POINT_RADIUS = 3
+    LINE_WIDTH = 1.3
+    IMAGE_SIZE = 1024
+
+    def PointCmap(t):
+        r, g, b, a = matplotlib.colormaps["jet"](t)
+        return int(r * 255), int(g * 255), int(b * 255)
+
+    n = floatPosArray.shape[1]
+
+    imPosArray = (floatPosArray * (IMAGE_SIZE - 1)).astype(np.int16)
+
+    im = PIL.Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), (255, 255, 255))
+    draw = aggdraw.Draw(im)
+
+    for i1, i2, rest in nx.to_edgelist(graph):
+        i1 = int(i1)
+        i2 = int(i2)
+
+        if i1 == i2:
+            continue
+
+        color = (0, 0, 0)
+
+        pen = aggdraw.Pen(color, LINE_WIDTH)
+        draw.line(
+            [
+                imPosArray[0, i1],
+                imPosArray[1, i1],
+                imPosArray[0, i2],
+                imPosArray[1, i2],
+            ],
+            pen,
+        )
+
+    for i in range(n):
+        color = PointCmap(i / (n - 1))
+
+        x0 = imPosArray[0, i]
+        y0 = imPosArray[1, i]
+
+        x0, x1 = x0 - POINT_RADIUS, x0 + POINT_RADIUS
+        y0, y1 = y0 - POINT_RADIUS, y0 + POINT_RADIUS
+
+        brush = aggdraw.Brush(color)
+        draw.ellipse([x0, y0, x1, y1], brush, None)
+
+    draw.flush()
+    return im
 
 
 @dataclass
@@ -1086,7 +1146,7 @@ def CreateLine(
                 k = start + kk
                 j = matrix.indices[k]
                 v = matrix.data[k]
-                if abs(v) > params.graphParams.tol:
+                if abs(v) > params.graphParams.tol and i != j:
                     edgelist[edgelistSize] = (int(i), int(j))
                     edgelistSize += 1
         edgelist = edgelist[:edgelistSize]
@@ -1104,97 +1164,85 @@ def CreateLine(
             mat = ViewMatrix(0)
         posArray = mat @ pos
 
-        fig, ax = plt.subplots(figsize=(8, 8))
+        minX = posArray[0, :].min()
+        maxX = posArray[0, :].max()
+        minY = posArray[1, :].min()
+        maxY = posArray[1, :].max()
 
-        ax.scatter(posArray[0], posArray[1], c=np.arange(n), cmap="winter")
+        minX, maxX = (
+            minX - PLOT_MARGIN * (maxX - minX),
+            maxX + PLOT_MARGIN * (maxX - minX),
+        )
+        minY, maxY = (
+            minY - PLOT_MARGIN * (maxY - minY),
+            maxY + PLOT_MARGIN * (maxY - minY),
+        )
 
-        for i1, i2, rest in nx.to_edgelist(g):
-            i1 = int(i1)
-            i2 = int(i2)
-            if i1 != i2:
-                ax.plot(
-                    [posArray[0, i1], posArray[0, i2]],
-                    [posArray[1, i1], posArray[1, i2]],
-                    "k-",
-                )
+        posArray[0, :] = (posArray[0, :] - minX) / (maxX - minX)
+        posArray[1, :] = (posArray[1, :] - minY) / (maxY - minY)
 
-        ax.set(xticks=[], yticks=[])
-        fig.tight_layout()
-        SaveFig(os.path.join(outDir, filepath), fig)
-        plt.close(fig)
+        im = CreateGraphImage(g, posArray)
+        im.save(os.path.join(outDir, filepath), "PNG")
 
         out.AddFigure("Graph", f'<img src="{filepath}" />')
+
+        logger.FinishSection()
 
         # 3d gif
 
         if params.graphParams.enableAnimation:
+            logger.StartSection("Graph 3d")
+
             filepath = imagePrefix + "-graph3d.gif"
 
             nFrames = params.graphParams.animationFrames
             posArrays = np.zeros((nFrames, 2, n))
             for f in range(nFrames):
-                t = (np.pi / 6) * np.sin(2 * np.pi / nFrames * f)
-                posArrays[f] = ViewMatrix(t) @ pos
+                #  t = 2 * np.pi / nFrames * f
+                #  angle = (np.pi / 6) * np.sin(t)
+                #  angle = t
+
+                t = 2 * f / nFrames
+                angle = (np.pi / 6) * np.abs(1 - t)
+
+                posArrays[f] = ViewMatrix(angle) @ pos
 
             minX = posArrays[:, 0, :].min()
             maxX = posArrays[:, 0, :].max()
             minY = posArrays[:, 1, :].min()
             maxY = posArrays[:, 1, :].max()
 
-            fig, ax = plt.subplots(figsize=(8, 8))
-
-            ptsScatter = ax.scatter(
-                posArray[0], posArray[1], c=np.arange(n), cmap="winter"
+            minX, maxX = (
+                minX - PLOT_MARGIN * (maxX - minX),
+                maxX + PLOT_MARGIN * (maxX - minX),
             )
-            edgeList = []
-            lines = []
-
-            for i1, i2, rest in nx.to_edgelist(g):
-                i1 = int(i1)
-                i2 = int(i2)
-                if i1 != i2:
-                    (line,) = ax.plot(
-                        [posArray[0, i1], posArray[0, i2]],
-                        [posArray[1, i1], posArray[1, i2]],
-                        "k-",
-                    )
-                    edgeList.append((i1, i2))
-                    lines.append(line)
-
-            def animate(f):
-                ptsScatter.set_offsets(posArrays[f].T)
-                for i in range(len(edgeList)):
-                    i1, i2 = edgeList[i]
-                    lines[i].set_data(
-                        [posArrays[f, 0, i1], posArrays[f, 0, i2]],
-                        [posArrays[f, 1, i1], posArrays[f, 1, i2]],
-                    )
-
-            ax.set(
-                xticks=[],
-                yticks=[],
-                xlim=[
-                    minX - PLOT_MARGIN * (maxX - minX),
-                    maxX + PLOT_MARGIN * (maxX - minX),
-                ],
-                ylim=[
-                    minY - PLOT_MARGIN * (maxY - minY),
-                    maxY + PLOT_MARGIN * (maxY - minY),
-                ],
+            minY, maxY = (
+                minY - PLOT_MARGIN * (maxY - minY),
+                maxY + PLOT_MARGIN * (maxY - minY),
             )
-            fig.tight_layout()
 
-            anim = animation.FuncAnimation(fig, animate, frames=nFrames)
-            anim.save(
+            posArrays[:, 0, :] = (posArrays[:, 0, :] - minX) / (maxX - minX)
+            posArrays[:, 1, :] = (posArrays[:, 1, :] - minY) / (maxY - minY)
+
+            images = None
+
+            with multiprocessing.Pool() as p:
+                images = p.starmap(
+                    CreateGraphImage, [(g, posArrays[f]) for f in range(nFrames)]
+                )
+
+            images[0].save(
                 os.path.join(outDir, filepath),
-                fps=params.graphParams.animationFps,
-                dpi=PLOT_DPI,
+                "GIF",
+                save_all=True,
+                append_images=images[1:],
+                duration=params.graphParams.animationDuration,
+                loop=0,
             )
-            plt.close(fig)
 
             out.AddFigure("Animated 3D graph", f'<img src="{filepath}" />')
 
-        logger.FinishSection()
+            logger.FinishSection()
 
     # --- Tail ---
 
