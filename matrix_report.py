@@ -4,6 +4,7 @@ import os
 import numpy as np
 import scipy
 from matplotlib import pyplot as plt
+import matplotlib.animation as animation
 import math
 import dataclasses
 from dataclasses import dataclass
@@ -214,9 +215,9 @@ class BlockParams:
         return SpectrumParams(enabled=False)
 
 
-def SpringLayout(params, g):
+def SpringLayout(params, g, is3d):
     if GRAPH_ENABLED:
-        return nx.spring_layout(g, seed=SEED)
+        return nx.spring_layout(g, seed=SEED, dim=(3 if is3d else 2))
 
 
 @dataclass
@@ -224,6 +225,10 @@ class GraphParams:
     enabled: bool = True
     tol: float = -1
     layout = SpringLayout
+
+    enableAnimation: bool = False
+    animationFrames: int = 20
+    animationFps: int = 10
 
     def Disabled():
         return SpectrumParams(enabled=False)
@@ -427,9 +432,9 @@ def CountKrc(
 
     krc = np.zeros((kr, kc))
 
-    masks = np.zeros((kr, kc, n))
-    lists = np.zeros((kr, kc, n))
-    sizes = np.zeros((kr, kc))
+    masks = np.zeros((kr, kc, n), dtype=np.int64)
+    lists = np.zeros((kr, kc, n), dtype=np.int64)
+    sizes = np.zeros((kr, kc), dtype=np.int64)
 
     for i in range(m):
         start = rowPtr[i]
@@ -439,8 +444,8 @@ def CountKrc(
             r = rList[ir]
             if i % r == 0:
                 for ic in range(kc):
-                    for k in range(int(sizes[ir, ic])):
-                        masks[ir, ic, int(lists[ir, ic, k])] = 0
+                    for k in range(sizes[ir, ic]):
+                        masks[ir, ic, lists[ir, ic, k]] = 0
                     sizes[ir, ic] = 0
 
         for kk in range(end - start):
@@ -456,13 +461,41 @@ def CountKrc(
                     jb = j // cList[ic]
 
                     if masks[ir, ic, jb] == 0:
-                        lists[ir, ic, int(sizes[ir, ic])] = jb
+                        lists[ir, ic, sizes[ir, ic]] = jb
                         krc[ir, ic] += 1
                         sizes[ir, ic] += 1
 
                     masks[ir, ic, jb] += 1
 
     return krc
+
+
+def ViewMatrix(rotation: float):
+    PLANE_ANGLE = 0.3
+
+    ct = np.cos(PLANE_ANGLE)
+    st = np.sin(PLANE_ANGLE)
+
+    cr = np.cos(rotation)
+    sr = np.sin(rotation)
+
+    proj = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, -st, ct],
+        ],
+    )
+    rot = np.array(
+        [
+            [cr, sr, 0.0],
+            [-sr, cr, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+    )
+
+    view = proj @ rot
+
+    return view
 
 
 @dataclass
@@ -1059,12 +1092,17 @@ def CreateLine(
         edgelist = edgelist[:edgelistSize]
         g = nx.from_edgelist(edgelist)
         layout = params.graphParams.layout
-        pos = layout(g)
-
-        posArray = np.zeros((2, n))
-
+        posDict = layout(g, params.graphParams.enableAnimation)
+        pos = np.zeros((3 if params.graphParams.enableAnimation else 2, n))
         for i in range(n):
-            posArray[:, i] = pos[i]
+            pos[:, i] = posDict[i]
+
+        # 2d image
+
+        mat = np.eye(2)
+        if params.graphParams.enableAnimation:
+            mat = ViewMatrix(0)
+        posArray = mat @ pos
 
         fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -1086,6 +1124,75 @@ def CreateLine(
         plt.close(fig)
 
         out.AddFigure("Graph", f'<img src="{filepath}" />')
+
+        # 3d gif
+
+        if params.graphParams.enableAnimation:
+            filepath = imagePrefix + "-graph3d.gif"
+
+            nFrames = params.graphParams.animationFrames
+            posArrays = np.zeros((nFrames, 2, n))
+            for f in range(nFrames):
+                t = (np.pi / 6) * np.sin(2 * np.pi / nFrames * f)
+                posArrays[f] = ViewMatrix(t) @ pos
+
+            minX = posArrays[:, 0, :].min()
+            maxX = posArrays[:, 0, :].max()
+            minY = posArrays[:, 1, :].min()
+            maxY = posArrays[:, 1, :].max()
+
+            fig, ax = plt.subplots(figsize=(8, 8))
+
+            ptsScatter = ax.scatter(
+                posArray[0], posArray[1], c=np.arange(n), cmap="winter"
+            )
+            edgeList = []
+            lines = []
+
+            for i1, i2, rest in nx.to_edgelist(g):
+                i1 = int(i1)
+                i2 = int(i2)
+                if i1 != i2:
+                    (line,) = ax.plot(
+                        [posArray[0, i1], posArray[0, i2]],
+                        [posArray[1, i1], posArray[1, i2]],
+                        "k-",
+                    )
+                    edgeList.append((i1, i2))
+                    lines.append(line)
+
+            def animate(f):
+                ptsScatter.set_offsets(posArrays[f].T)
+                for i in range(len(edgeList)):
+                    i1, i2 = edgeList[i]
+                    lines[i].set_data(
+                        [posArrays[f, 0, i1], posArrays[f, 0, i2]],
+                        [posArrays[f, 1, i1], posArrays[f, 1, i2]],
+                    )
+
+            ax.set(
+                xticks=[],
+                yticks=[],
+                xlim=[
+                    minX - PLOT_MARGIN * (maxX - minX),
+                    maxX + PLOT_MARGIN * (maxX - minX),
+                ],
+                ylim=[
+                    minY - PLOT_MARGIN * (maxY - minY),
+                    maxY + PLOT_MARGIN * (maxY - minY),
+                ],
+            )
+            fig.tight_layout()
+
+            anim = animation.FuncAnimation(fig, animate, frames=nFrames)
+            anim.save(
+                os.path.join(outDir, filepath),
+                fps=params.graphParams.animationFps,
+                dpi=PLOT_DPI,
+            )
+            plt.close(fig)
+
+            out.AddFigure("Animated 3D graph", f'<img src="{filepath}" />')
 
         logger.FinishSection()
 
@@ -1386,7 +1493,6 @@ if __name__ == "__main__":
         matrices=[
             ReportParams(matrix=os.path.join(matDir, f), name=f) for f in matFnames
         ],
-        #  defaultChoiceParams=BLOCKS_PRESET,
         outDir=outDir,
         verbose=True,
     )
