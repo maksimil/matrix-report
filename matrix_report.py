@@ -220,6 +220,15 @@ class SpectrumParams:
 
 
 @dataclass
+class SparsifyParams:
+    enabled: bool = True
+    minTol: float = 1e-30
+
+    def Disabled():
+        return SparsifyParams(enabled=False)
+
+
+@dataclass
 class BlockParams:
     enabled: bool = True
     tol: float = 0
@@ -271,6 +280,8 @@ class ReportParams:
     singularParams: SingularParams | NoneType = None
     condParams: CondParams | NoneType = None
     spectrumParams: SpectrumParams | NoneType = None
+
+    sparsifyParams: SparsifyParams | NoneType = None
 
     blockParams: BlockParams | NoneType = None
 
@@ -1209,6 +1220,49 @@ def CreateLine(
 
         logger.FinishSection()
 
+    # --- Sparsify ---
+
+    if params.sparsifyParams.enabled:
+        logger.StartSection("Sparsify")
+
+        filepath = imagePrefix + "-sparsify.png"
+
+        nzData = np.abs(matrix.data)
+        nzData.sort()
+        minTol = params.sparsifyParams.minTol
+        nZero = 0
+        while nzData[nZero] < minTol and nZero < len(nzData):
+            nZero += 1
+        nzData = nzData[nZero:]
+
+        sparsity = ((nnz - nZero) - np.arange(nzData.shape[0])) / (m * n) * 100
+        frobNorm = np.sqrt(np.cumsum(np.square(nzData)))
+
+        fig, ax1 = plt.subplots(figsize=(8, 8))
+        ax2 = ax1.twinx()
+
+        ax1.set(
+            xlabel="Tolerance",
+            xscale="log",
+            ylabel="Frobenius norm",
+            yscale="log",
+        )
+        ax2.set(ylabel="Sparsity, %")
+
+        p1 = ax1.plot(nzData, frobNorm, "k-", label="Frobenius norm")
+        p2 = ax2.plot(nzData, sparsity, "r-", label="Sparsity")
+
+        lns = p1 + p2
+        ax1.legend(lns, [e.get_label() for e in lns])
+
+        fig.tight_layout()
+        SaveFig(os.path.join(outDir, filepath), fig)
+        plt.close(fig)
+
+        out.AddFigure("Sparsify", f'<img src="{filepath}" />')
+
+        logger.FinishSection()
+
     # --- Block ---
 
     if params.blockParams.enabled:
@@ -1466,6 +1520,9 @@ class DefaultChoiceParams:
     defaultSpectrumParams: SpectrumParams = SpectrumParams()
     limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
 
+    defaultSparsifyParams: SparsifyParams = SparsifyParams()
+    limitSparsify: MatrixLimit = MatrixLimit()
+
     defaultBlockParams: BlockParams = BlockParams()
     limitBlock: MatrixLimit = MatrixLimit()
 
@@ -1533,54 +1590,57 @@ def FillDefaultParams(
         else:
             params.name = retName
 
-    if params.colorParams is None:
-        params.colorParams = (
-            defaultChoice.defaultColorParams
-            if defaultChoice.limitColor.IsWithin(matrix)
-            else ColorParams.Disabled()
-        )
+    def EnableIf(param, default, limit):
+        if param is None:
+            if limit.IsWithin(matrix):
+                return default
+            else:
+                return type(default).Disabled()
+        else:
+            return param
 
-    if params.shadeParams is None:
-        params.shadeParams = (
-            defaultChoice.defaultShadeParams
-            if defaultChoice.limitShade.IsWithin(matrix)
-            else ShadeParams.Disabled()
-        )
+    params.colorParams = EnableIf(
+        params.colorParams,
+        defaultChoice.defaultColorParams,
+        defaultChoice.limitColor,
+    )
 
-    if params.scatterParams is None:
-        params.scatterParams = (
-            defaultChoice.defaultScatterParams
-            if defaultChoice.limitScatter.IsWithin(matrix)
-            else ScatterParams.Disabled()
-        )
+    params.shadeParams = EnableIf(
+        params.shadeParams,
+        defaultChoice.defaultShadeParams,
+        defaultChoice.limitShade,
+    )
 
-    if params.histParams is None:
-        params.histParams = (
-            defaultChoice.defaultHistParams
-            if defaultChoice.limitHist.IsWithin(matrix)
-            else HistParams.Disabled()
-        )
+    params.scatterParams = EnableIf(
+        params.scatterParams,
+        defaultChoice.defaultScatterParams,
+        defaultChoice.limitScatter,
+    )
 
-    if params.singularParams is None:
-        params.singularParams = (
-            defaultChoice.defaultSingularParams
-            if defaultChoice.limitSingular.IsWithin(matrix)
-            else SingularParams.Disabled()
-        )
+    params.histParams = EnableIf(
+        params.histParams,
+        defaultChoice.defaultHistParams,
+        defaultChoice.limitHist,
+    )
 
-    if params.condParams is None:
-        params.condParams = (
-            defaultChoice.defaultCondParams
-            if defaultChoice.limitCond.IsWithin(matrix)
-            else CondParams.Disabled()
-        )
+    params.singularParams = EnableIf(
+        params.singularParams,
+        defaultChoice.defaultSingularParams,
+        defaultChoice.limitSingular,
+    )
+
+    params.condParams = EnableIf(
+        params.condParams,
+        defaultChoice.defaultCondParams,
+        defaultChoice.limitCond,
+    )
 
     if params.spectrumParams is None:
         if m == n:
-            params.spectrumParams = (
-                defaultChoice.defaultSpectrumParams
-                if defaultChoice.limitSpectrum.IsWithin(matrix)
-                else SpectrumParams.Disabled()
+            params.spectrumParams = EnableIf(
+                params.spectrumParams,
+                defaultChoice.defaultSpectrumParams,
+                defaultChoice.limitSpectrum,
             )
         else:
             params.spectrumParams = SpectrumParams.Disabled()
@@ -1592,12 +1652,17 @@ def FillDefaultParams(
         )
         params.spectrumParams = SpectrumParams.Disabled()
 
-    if params.blockParams is None:
-        params.blockParams = (
-            defaultChoice.defaultBlockParams
-            if defaultChoice.limitBlock.IsWithin(matrix)
-            else BlockParams.Disabled()
-        )
+    params.sparsifyParams = EnableIf(
+        params.sparsifyParams,
+        defaultChoice.defaultSparsifyParams,
+        defaultChoice.limitSparsify,
+    )
+
+    params.blockParams = EnableIf(
+        params.blockParams,
+        defaultChoice.defaultBlockParams,
+        defaultChoice.limitBlock,
+    )
 
     if params.blockParams.enabled and (2 ** (8 * params.blockParams.intSize)) < max(
         m, n
@@ -1614,10 +1679,10 @@ def FillDefaultParams(
 
     if params.graphParams is None:
         if m == n:
-            params.graphParams = (
-                defaultChoice.defaultGraphParams
-                if defaultChoice.limitGraph.IsWithin(matrix) and GRAPH_ENABLED
-                else GraphParams.Disabled()
+            params.graphParams = EnableIf(
+                params.graphParams,
+                defaultChoice.defaultGraphParams,
+                defaultChoice.limitGraph,
             )
         else:
             params.graphParams = GraphParams.Disabled()
