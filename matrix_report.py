@@ -6,7 +6,6 @@ import scipy
 import matplotlib
 from matplotlib import pyplot as plt
 import multiprocessing
-import itertools
 import math
 import dataclasses
 from dataclasses import dataclass
@@ -845,7 +844,7 @@ def CreateLine(
                 if z == 0:
                     color = white
                 elif z < 0.5:
-                    color = white + (red - white) * (z + 0.2)
+                    color = white + (red - white) * (z + 0.1)
                 else:
                     color = white + (black - white) * z
                 imageData[ib, jb] = color
@@ -898,7 +897,7 @@ def CreateLine(
         ax.grid()
         ax.set(
             xlim=[-PLOT_MARGIN * (n - 1), (1 + PLOT_MARGIN) * (n - 1)],
-            xlabel="Columns",
+            xlabel="Cols",
             ylim=[-PLOT_MARGIN * (m - 1), (1 + PLOT_MARGIN) * (m - 1)],
             ylabel="Rows",
         )
@@ -921,7 +920,7 @@ def CreateLine(
 
         r, c = params.histParams.blockR, params.histParams.blockC
         blocksNnz = np.zeros(r * c, dtype=np.int64)
-        maxNnz = 0
+        maxBNnz = 0
 
         for ib in range((m + r - 1) // r):
             i = ib * r
@@ -941,9 +940,9 @@ def CreateLine(
                 bnnz = counts[0, 0, jb]
                 if bnnz != 0:
                     blocksNnz[bnnz - 1] += 1
-                    maxNnz = max(maxNnz, bnnz)
+                    maxBNnz = max(maxBNnz, bnnz)
 
-        blocksNnz = blocksNnz[:maxNnz]
+        blocksNnz = blocksNnz[:maxBNnz]
 
         rowNnz, colNnz = CountRowColNnz(
             m,
@@ -958,24 +957,34 @@ def CreateLine(
         ax1, ax2, ax3 = axs.flatten()
 
         ax1.set(
-            title=f"{r} x {c} blocks nnz (max={maxNnz}/{r * c}, {maxNnz / (r * c) * 100:.4f}%)",
-            xlabel="Nnz",
+            title=f"{r} x {c} blocks sparsity (max={maxBNnz}/{r * c}, {maxBNnz / (r * c) * 100:.4f}%)",
+            xlabel="Sparsity, %",
             ylabel="Count",
             yscale=params.histParams.blockScale,
         )
-        nbins = min(maxNnz, MAX_HIST_BINS)
-        bins = np.linspace(0.5, maxNnz + 0.5, nbins + 1)
-        ax1.hist([i + 1 for i in range(maxNnz)], bins, weights=blocksNnz, color="k")
+        nbins = min(maxBNnz, MAX_HIST_BINS)
+        bins = np.linspace(0, maxBNnz / (r * c) * 100, nbins)
+        ax1.hist(
+            (np.arange(maxBNnz) + 1) / (r * c) * 100,
+            bins,
+            weights=blocksNnz,
+            color="k",
+            edgecolor="r",
+        )
 
         ax2.set(
-            title="Row and col nnz",
-            xlabel="Nnz",
+            title="Row and col sparsity",
+            xlabel="Sparsity, %",
             ylabel="Count",
             yscale=params.histParams.axNnzScale,
         )
-        maxNnz = max(rowNnz.max(), colNnz.max())
-        nbins = min(maxNnz, MAX_HIST_BINS // 2)
-        bins = np.linspace(0.5, maxNnz + 0.5, nbins + 1)
+        maxRowNnz = rowNnz.max()
+        maxColNnz = colNnz.max()
+        maxSparsity = max(maxRowNnz / n * 100, maxColNnz / m * 100)
+        nbins = min(max(maxRowNnz, maxColNnz), MAX_HIST_BINS // 2)
+        bins = np.linspace(0, maxSparsity, nbins)
+        rowNnz = rowNnz / n * 100
+        colNnz = colNnz / m * 100
         ax2.hist(
             np.array([rowNnz, colNnz]).T,
             bins,
@@ -991,20 +1000,20 @@ def CreateLine(
             ylabel="Count",
             yscale=params.histParams.nzScale,
         )
-        nzSorted = matrix.data[:]
-        minV = minNeg
-        maxV = maxPos
+        nzData = matrix.data[:]
+        minV = nzData.min()
+        maxV = nzData.max()
         if params.histParams.nzQ != 1.0:
-            nzSorted.sort()
+            nzData.sort()
             s = (1 - params.histParams.nzQ) / 2
             i0 = int(np.floor(nnz * s))
             i1 = int(np.ceil(nnz * (1 - s)))
-            nzSorted = nzSorted[i0:i1]
-            minV = nzSorted[0]
-            maxV = nzSorted[-1]
-        nbins = min(int(np.ceil(np.log2(nnz) + 1)), MAX_HIST_BINS)
+            nzData = nzData[i0:i1]
+            minV = nzData[0]
+            maxV = nzData[-1]
+        nbins = MAX_HIST_BINS
         bins = np.linspace(minV, maxV, nbins + 1)
-        ax3.hist(matrix.data, bins, color="k")
+        ax3.hist(nzData, bins, color="k", edgecolor="r")
 
         fig.tight_layout()
         SaveFig(os.path.join(outDir, filepath), fig)
@@ -1288,7 +1297,10 @@ def CreateLine(
 
         filepath = imagePrefix + "-graph.png"
 
-        edgelist = np.zeros((nnz, 2))
+        g = nx.Graph()
+        g.add_nodes_from(range(n))
+
+        edgelist = np.zeros((nnz, 2), dtype=np.int64)
         edgelistSize = 0
         for i in range(m):
             start = matrix.indptr[i]
@@ -1301,7 +1313,8 @@ def CreateLine(
                     edgelist[edgelistSize] = (int(i), int(j))
                     edgelistSize += 1
         edgelist = edgelist[:edgelistSize]
-        g = nx.from_edgelist(edgelist)
+        g.add_edges_from(edgelist)
+
         layout = params.graphParams.layout
         posDict = layout(g, params.graphParams.enableAnimation)
         pos = np.zeros((3 if params.graphParams.enableAnimation else 2, n))
