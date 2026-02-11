@@ -952,6 +952,9 @@ def CreateLine(
             matrix.data,
             params.histParams.zeroTol,
         )
+        maxRowNnz = rowNnz.max()
+        maxColNnz = colNnz.max()
+        maxAxNnz = max(maxRowNnz, maxColNnz)
 
         fig, axs = plt.subplots(3, 1, figsize=(8, 8))
         ax1, ax2, ax3 = axs.flatten()
@@ -963,7 +966,7 @@ def CreateLine(
             yscale=params.histParams.blockScale,
         )
         nbins = min(maxBNnz, MAX_HIST_BINS)
-        bins = np.linspace(0, maxBNnz / (r * c) * 100, nbins)
+        bins = np.linspace(0, maxBNnz / (r * c) * 100, nbins + 1)
         ax1.hist(
             (np.arange(maxBNnz) + 1) / (r * c) * 100,
             bins,
@@ -973,18 +976,16 @@ def CreateLine(
         )
 
         ax2.set(
-            title="Row and col sparsity",
-            xlabel="Sparsity, %",
+            title="Row and col nnz "
+            + f"(row max={maxRowNnz}/{n}, {maxRowNnz / n * 100:.4f}%,"
+            + f" col max={maxColNnz}/{m}, {maxColNnz / m * 100:.4f}%)",
+            xlabel="Nnz",
             ylabel="Count",
             yscale=params.histParams.axNnzScale,
         )
-        maxRowNnz = rowNnz.max()
-        maxColNnz = colNnz.max()
-        maxSparsity = max(maxRowNnz / n * 100, maxColNnz / m * 100)
-        nbins = min(max(maxRowNnz, maxColNnz), MAX_HIST_BINS // 2)
-        bins = np.linspace(0, maxSparsity, nbins)
-        rowNnz = rowNnz / n * 100
-        colNnz = colNnz / m * 100
+        joinFactor = int(np.ceil(maxAxNnz / (MAX_HIST_BINS // 2)))
+        nbins = (maxAxNnz + joinFactor - 1) // joinFactor
+        bins = np.arange(nbins + 1) * joinFactor + 0.5
         ax2.hist(
             np.array([rowNnz, colNnz]).T,
             bins,
@@ -992,6 +993,7 @@ def CreateLine(
             color=["k", "r"],
             label=["row", "col"],
         )
+        ax2.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
         ax2.legend()
 
         ax3.set(
