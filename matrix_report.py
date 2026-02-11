@@ -27,6 +27,7 @@ AUTO_INCREASE_INT_SIZE = True
 SEED = 42
 PLOT_DPI = 200
 MIN_PNG_SIZE = 1024
+MAX_HIST_BINS = 100
 
 # -----------------------------
 # --- Optional dependencies ---
@@ -179,6 +180,22 @@ class ScatterParams:
 
 
 @dataclass
+class HistParams:
+    enabled: bool = True
+    blockR: int = 32
+    blockC: int = 32
+    zeroTol: float = 0
+    nzQ: float = 1.0
+
+    blockScale: str = "log"
+    axNnzScale: str = "log"
+    nzScale: str = "log"
+
+    def Disabled():
+        return HistParams(enabled=False)
+
+
+@dataclass
 class SingularParams:
     enabled: bool = True
 
@@ -233,7 +250,7 @@ class GraphParams:
     tol: float = -1
     layout = SpringLayout
 
-    enableAnimation: bool = True
+    enableAnimation: bool = False
     animationFrames: int = 30
     animationDuration: float = 100
 
@@ -249,6 +266,8 @@ class ReportParams:
     colorParams: ColorParams | NoneType = None
     shadeParams: ShadeParams | NoneType = None
     scatterParams: ScatterParams | NoneType = None
+
+    histParams: HistParams | NoneType = None
 
     singularParams: SingularParams | NoneType = None
     condParams: CondParams | NoneType = None
@@ -424,6 +443,36 @@ def SaveFig(path, fig):
 
 
 @jit
+def CountRowColNnz(
+    m: int,
+    n: int,
+    rowPtr: np.ndarray,
+    col: np.ndarray,
+    values: np.ndarray,
+    tol: float,
+):
+    rowNnz = np.zeros(m, dtype=np.int64)
+    colNnz = np.zeros(n, dtype=np.int64)
+
+    for i in range(m):
+        start = rowPtr[i]
+        end = rowPtr[i + 1]
+
+        for kk in range(end - start):
+            k = start + kk
+            j = col[k]
+            v = values[k]
+
+            if abs(v) <= tol:
+                continue
+
+            rowNnz[i] += 1
+            colNnz[j] += 1
+
+    return rowNnz, colNnz
+
+
+@jit
 def CountKrc(
     m: int,
     n: int,
@@ -439,7 +488,7 @@ def CountKrc(
 
     krc = np.zeros((kr, kc))
 
-    masks = np.zeros((kr, kc, n), dtype=np.int64)
+    counts = np.zeros((kr, kc, n), dtype=np.int64)
     lists = np.zeros((kr, kc, n), dtype=np.int64)
     sizes = np.zeros((kr, kc), dtype=np.int64)
 
@@ -452,7 +501,7 @@ def CountKrc(
             if i % r == 0:
                 for ic in range(kc):
                     for k in range(sizes[ir, ic]):
-                        masks[ir, ic, lists[ir, ic, k]] = 0
+                        counts[ir, ic, lists[ir, ic, k]] = 0
                     sizes[ir, ic] = 0
 
         for kk in range(end - start):
@@ -467,14 +516,14 @@ def CountKrc(
                 for ic in range(kc):
                     jb = j // cList[ic]
 
-                    if masks[ir, ic, jb] == 0:
+                    if counts[ir, ic, jb] == 0:
                         lists[ir, ic, sizes[ir, ic]] = jb
                         krc[ir, ic] += 1
                         sizes[ir, ic] += 1
 
-                    masks[ir, ic, jb] += 1
+                    counts[ir, ic, jb] += 1
 
-    return krc
+    return krc, counts
 
 
 def ViewMatrix(rotation: float):
@@ -863,6 +912,108 @@ def CreateLine(
 
         logger.FinishSection()
 
+    # --- Histogram ---
+
+    if params.histParams.enabled:
+        logger.StartSection("Histogram")
+
+        filepath = imagePrefix + "-hist.png"
+
+        r, c = params.histParams.blockR, params.histParams.blockC
+        blocksNnz = np.zeros(r * c, dtype=np.int64)
+        maxNnz = 0
+
+        for ib in range((m + r - 1) // r):
+            i = ib * r
+            mb = min(i + r, m) - i
+            (_, counts) = CountKrc(
+                mb,
+                n,
+                matrix.indptr[i : i + mb + 1],
+                matrix.indices,
+                matrix.data,
+                params.histParams.zeroTol,
+                [r],
+                [c],
+            )
+
+            for jb in range((n + c - 1) // c):
+                bnnz = counts[0, 0, jb]
+                if bnnz != 0:
+                    blocksNnz[bnnz - 1] += 1
+                    maxNnz = max(maxNnz, bnnz)
+
+        blocksNnz = blocksNnz[:maxNnz]
+
+        rowNnz, colNnz = CountRowColNnz(
+            m,
+            n,
+            matrix.indptr,
+            matrix.indices,
+            matrix.data,
+            params.histParams.zeroTol,
+        )
+
+        fig, axs = plt.subplots(3, 1, figsize=(8, 8))
+        ax1, ax2, ax3 = axs.flatten()
+
+        ax1.set(
+            title=f"{r} x {c} blocks nnz (max={maxNnz}/{r * c}, {maxNnz / (r * c) * 100:.4f}%)",
+            xlabel="Nnz",
+            ylabel="Count",
+            yscale=params.histParams.blockScale,
+        )
+        nbins = min(maxNnz, MAX_HIST_BINS)
+        bins = np.linspace(0.5, maxNnz + 0.5, nbins + 1)
+        ax1.hist([i + 1 for i in range(maxNnz)], bins, weights=blocksNnz, color="k")
+
+        ax2.set(
+            title="Row and col nnz",
+            xlabel="Nnz",
+            ylabel="Count",
+            yscale=params.histParams.axNnzScale,
+        )
+        maxNnz = max(rowNnz.max(), colNnz.max())
+        nbins = min(maxNnz, MAX_HIST_BINS // 2)
+        bins = np.linspace(0.5, maxNnz + 0.5, nbins + 1)
+        ax2.hist(
+            np.array([rowNnz, colNnz]).T,
+            bins,
+            rwidth=1,
+            color=["k", "r"],
+            label=["row", "col"],
+        )
+        ax2.legend()
+
+        ax3.set(
+            title=f"Entry values ({params.histParams.nzQ * 100}%)",
+            xlabel="Value",
+            ylabel="Count",
+            yscale=params.histParams.nzScale,
+        )
+        nzSorted = matrix.data[:]
+        minV = minNeg
+        maxV = maxPos
+        if params.histParams.nzQ != 1.0:
+            nzSorted.sort()
+            s = (1 - params.histParams.nzQ) / 2
+            i0 = int(np.floor(nnz * s))
+            i1 = int(np.ceil(nnz * (1 - s)))
+            nzSorted = nzSorted[i0:i1]
+            minV = nzSorted[0]
+            maxV = nzSorted[-1]
+        nbins = min(int(np.ceil(np.log2(nnz) + 1)), MAX_HIST_BINS)
+        bins = np.linspace(minV, maxV, nbins + 1)
+        ax3.hist(matrix.data, bins, color="k")
+
+        fig.tight_layout()
+        SaveFig(os.path.join(outDir, filepath), fig)
+        plt.close(fig)
+
+        out.AddFigure("Histograms", f'<img src="{filepath}" />')
+
+        logger.FinishSection()
+
     # --- Singular values ---
 
     if params.singularParams.enabled:
@@ -1056,7 +1207,7 @@ def CreateLine(
 
         maxR = params.blockParams.maxR
         maxC = params.blockParams.maxC
-        krc = CountKrc(
+        (krc, _) = CountKrc(
             m,
             n,
             matrix.indptr,
@@ -1288,6 +1439,9 @@ class DefaultChoiceParams:
     defaultScatterParams: ScatterParams = ScatterParams()
     limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
 
+    defaultHistParams: HistParams = HistParams()
+    limitHist: MatrixLimit = MatrixLimit()
+
     defaultSingularParams: SingularParams = SingularParams()
     limitSingular: MatrixLimit = MatrixLimit.Square(n=1_000)
 
@@ -1298,10 +1452,10 @@ class DefaultChoiceParams:
     limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
 
     defaultBlockParams: BlockParams = BlockParams()
-    limitBlockParams: MatrixLimit = MatrixLimit()
+    limitBlock: MatrixLimit = MatrixLimit()
 
     defaultGraphParams: GraphParams = GraphParams()
-    limitGraphParams: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=10_000)
+    limitGraph: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=10_000)
 
 
 BLOCKS_PRESET = DefaultChoiceParams(
@@ -1309,7 +1463,7 @@ BLOCKS_PRESET = DefaultChoiceParams(
     limitSingular=MatrixLimit.Disabled(),
     limitCond=MatrixLimit.Disabled(),
     limitSpectrum=MatrixLimit.Disabled(),
-    limitGraphParams=MatrixLimit.Disabled(),
+    limitGraph=MatrixLimit.Disabled(),
 )
 
 
@@ -1385,6 +1539,13 @@ def FillDefaultParams(
             else ScatterParams.Disabled()
         )
 
+    if params.histParams is None:
+        params.histParams = (
+            defaultChoice.defaultHistParams
+            if defaultChoice.limitHist.IsWithin(matrix)
+            else HistParams.Disabled()
+        )
+
     if params.singularParams is None:
         params.singularParams = (
             defaultChoice.defaultSingularParams
@@ -1419,7 +1580,7 @@ def FillDefaultParams(
     if params.blockParams is None:
         params.blockParams = (
             defaultChoice.defaultBlockParams
-            if defaultChoice.limitBlockParams.IsWithin(matrix)
+            if defaultChoice.limitBlock.IsWithin(matrix)
             else BlockParams.Disabled()
         )
 
@@ -1440,7 +1601,7 @@ def FillDefaultParams(
         if m == n:
             params.graphParams = (
                 defaultChoice.defaultGraphParams
-                if defaultChoice.limitGraphParams.IsWithin(matrix) and GRAPH_ENABLED
+                if defaultChoice.limitGraph.IsWithin(matrix) and GRAPH_ENABLED
                 else GraphParams.Disabled()
             )
         else:
