@@ -227,9 +227,15 @@ class HistParams:
     zeroTol: float = 0
     nzQ: float = 1.0
 
-    blockScale: str = "log"
-    axNnzScale: str = "log"
-    nzScale: str = "log"
+    #  blockScale: str = "log"
+    #  nzScale: str = "log"
+    #  axNnzScale: str = "log"
+    #  axNormScale: str = "log"
+
+    blockScale: str = "linear"
+    nzScale: str = "linear"
+    axNnzScale: str = "linear"
+    axNormScale: str = "linear"
 
     def Disabled():
         return HistParams(enabled=False)
@@ -505,7 +511,9 @@ def CountRowColNnz(
     tol: float,
 ):
     rowNnz = np.zeros(m, dtype=np.int64)
+    rowNorm = np.zeros(m)
     colNnz = np.zeros(n, dtype=np.int64)
+    colNorm = np.zeros(n)
 
     for i in range(m):
         start = rowPtr[i]
@@ -516,13 +524,19 @@ def CountRowColNnz(
             j = col[k]
             v = values[k]
 
+            rowNorm[i] += v * v
+            colNorm[j] += v * v
+
             if abs(v) <= tol:
                 continue
 
             rowNnz[i] += 1
             colNnz[j] += 1
 
-    return rowNnz, colNnz
+    rowNorm = np.sqrt(rowNorm)
+    colNorm = np.sqrt(colNorm)
+
+    return rowNnz, rowNorm, colNnz, colNorm
 
 
 @jit
@@ -799,7 +813,7 @@ class VerboseLogger:
     def Finish(self):
         now = time.perf_counter()
         ela = now - self.startTime
-        print(f"[{self.name:20s}] {'Finished all':20s} ({ela:6.2f} s)")
+        print(f"\x1b[34m[{self.name:20s}] {'Finished all':20s}\x1b[0m ({ela:6.2f} s)")
 
 
 class NoLogger:
@@ -1003,8 +1017,6 @@ def CreateLine(
     if params.histParams.enabled:
         logger.StartSection("Histogram")
 
-        filepath = imagePrefix + "-hist.png"
-
         r, c = params.histParams.blockR, params.histParams.blockC
 
         blocksNnz = CountBlocksNnz(
@@ -1019,7 +1031,7 @@ def CreateLine(
         )
         maxBNnz = len(blocksNnz)
 
-        rowNnz, colNnz = CountRowColNnz(
+        rowNnz, rowNorms, colNnz, colNorms = CountRowColNnz(
             m,
             n,
             matrix.indptr,
@@ -1031,13 +1043,16 @@ def CreateLine(
         maxColNnz = colNnz.max()
         maxAxNnz = max(maxRowNnz, maxColNnz)
 
-        fig, axs = plt.subplots(3, 1, figsize=(8, 8))
-        ax1, ax2, ax3 = axs.flatten()
+        # Histograms
+
+        filepath = imagePrefix + "-hist.png"
+        fig, axs = plt.subplots(2, 1, figsize=(8, 8))
+        ax1, ax2 = axs.flatten()
 
         ax1.set(
-            title=f"{r} x {c} blocks sparsity (max={maxBNnz}/{r * c}, {maxBNnz / (r * c) * 100:.4f}%)",
+            title=f"{r} x {c} blocks sparsity "
+            + f"(max={maxBNnz}/{r * c}, {maxBNnz / (r * c) * 100:.4f}%)",
             xlabel="Sparsity, %",
-            ylabel="Count",
             yscale=params.histParams.blockScale,
         )
         nbins = min(maxBNnz, MAX_HIST_BINS)
@@ -1045,36 +1060,14 @@ def CreateLine(
         ax1.hist(
             (np.arange(maxBNnz) + 1) / (r * c) * 100,
             bins,
-            weights=blocksNnz,
+            weights=blocksNnz / sum(blocksNnz),
             color="k",
             edgecolor="r",
         )
 
         ax2.set(
-            title="Row and col nnz "
-            + f"(row max={maxRowNnz}/{n}, {maxRowNnz / n * 100:.4f}%,"
-            + f" col max={maxColNnz}/{m}, {maxColNnz / m * 100:.4f}%)",
-            xlabel="Nnz",
-            ylabel="Count",
-            yscale=params.histParams.axNnzScale,
-        )
-        joinFactor = int(np.ceil(maxAxNnz / (MAX_HIST_BINS // 2)))
-        nbins = (maxAxNnz + joinFactor - 1) // joinFactor
-        bins = np.arange(nbins + 1) * joinFactor + 0.5
-        ax2.hist(
-            [rowNnz, colNnz],
-            bins,
-            rwidth=1,
-            color=["k", "r"],
-            label=["row", "col"],
-        )
-        ax2.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-        ax2.legend()
-
-        ax3.set(
             title=f"Entry values ({params.histParams.nzQ * 100}%)",
             xlabel="Value",
-            ylabel="Count",
             yscale=params.histParams.nzScale,
         )
         nzData = matrix.data[:]
@@ -1090,13 +1083,71 @@ def CreateLine(
             maxV = nzData[-1]
         nbins = MAX_HIST_BINS
         bins = np.linspace(minV, maxV, nbins + 1)
-        ax3.hist(nzData, bins, color="k", edgecolor="r")
+        ax2.hist(
+            nzData,
+            bins,
+            weights=np.repeat(1, len(nzData)) / len(nzData),
+            color="k",
+            edgecolor="r",
+        )
 
         fig.tight_layout()
         SaveFig(os.path.join(outDir, filepath), fig)
         plt.close(fig)
 
-        out.AddFigure("Histograms", f'<img src="{filepath}" />')
+        out.AddFigure("Histograms (blocks and entries)", f'<img src="{filepath}" />')
+
+        # Axis histograms
+
+        filepath = imagePrefix + "-hist-ax.png"
+        fig, axs = plt.subplots(2, 1, figsize=(8, 8))
+        ax1, ax2 = axs.flatten()
+
+        ax1.set(
+            title="Row and col nnz "
+            + f"(row max={maxRowNnz}/{n}, {maxRowNnz / n * 100:.4f}%,"
+            + f" col max={maxColNnz}/{m}, {maxColNnz / m * 100:.4f}%)",
+            xlabel="Nnz",
+            yscale=params.histParams.axNnzScale,
+        )
+        joinFactor = int(np.ceil(maxAxNnz / (MAX_HIST_BINS // 2)))
+        nbins = (maxAxNnz + joinFactor - 1) // joinFactor
+        bins = np.arange(nbins + 1) * joinFactor + 0.5
+        ax1.hist(
+            [rowNnz, colNnz],
+            bins,
+            weights=[np.repeat(1, m) / m, np.repeat(1, n) / n],
+            rwidth=1,
+            color=["k", "r"],
+            label=["row", "col"],
+        )
+        ax1.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+        ax1.legend()
+
+        ax2.set(
+            title="Row and col norms",
+            xlabel="Value",
+            yscale=params.histParams.axNormScale,
+        )
+        nbins = MAX_HIST_BINS
+        bins = np.linspace(
+            min(rowNorms.min(), colNorms.min()),
+            max(rowNorms.max(), colNorms.max()),
+            nbins,
+        )
+        ax2.hist(
+            [rowNorms, colNorms],
+            bins,
+            weights=[np.repeat(1, m) / m, np.repeat(1, n) / n],
+            rwidth=1,
+            color=["k", "r"],
+        )
+
+        fig.tight_layout()
+        SaveFig(os.path.join(outDir, filepath), fig)
+        plt.close(fig)
+
+        out.AddFigure("Histograms (row and col stats)", f'<img src="{filepath}" />')
 
         logger.FinishSection()
 
@@ -1322,12 +1373,12 @@ def CreateLine(
         ax1.set(
             xlabel="Tolerance",
             xscale="log",
-            ylabel="Frobenius norm",
+            ylabel="Error Frobenius norm",
             yscale="log",
         )
         ax2.set(ylabel="Sparsity, %")
 
-        p1 = ax1.plot(tols, frobNorm, "k-", label="Frobenius norm")
+        p1 = ax1.plot(tols, frobNorm, "k-", label="Error Frobenius norm")
         p2 = ax2.plot(tols, sparsity, "r-", label="Sparsity")
 
         lns = p1 + p2
@@ -1865,7 +1916,7 @@ def ProcessParams(
     m, n = matrixData.matrix.shape
     nnz = matrixData.matrix.getnnz()
     print(
-        f"[{i + 1}/{nmats}] {params.name} "
+        f"\x1b[32m[{i + 1}/{nmats}] {params.name}\x1b[0m "
         f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
         f"nnz={matrixData.matrix.getnnz():11.4e} ({nnz / (m * n) * 100:8.4f}%)"
     )
