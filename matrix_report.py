@@ -42,14 +42,11 @@ numba = None
 
 
 def jit(f):
-    pass
+    return f
 
 
 if importlib.util.find_spec("numba") is None:
     print("WARN: install numba to accelerate some computations")
-
-    def jit(f):
-        return f
 else:
     import numba
 
@@ -358,12 +355,14 @@ def ComputeSymmetry(
             if i == j:
                 continue
 
-            jStart = indptr[j]
-            jEnd = indptr[j + 1]
-            kSymm = np.searchsorted(indices[jStart:jEnd], i) + jStart
             vSymm = np.nan
-            if kSymm >= jStart and kSymm < jEnd and indices[kSymm] == i:
-                vSymm = values[kSymm]
+
+            if j < m:
+                jStart = indptr[j]
+                jEnd = indptr[j + 1]
+                kSymm = np.searchsorted(indices[jStart:jEnd], i) + jStart
+                if kSymm >= jStart and kSymm < jEnd and indices[kSymm] == i:
+                    vSymm = values[kSymm]
 
             if np.isnan(vSymm):
                 pairsCnt += 1
@@ -1035,7 +1034,7 @@ def CreateLine(
         nbins = (maxAxNnz + joinFactor - 1) // joinFactor
         bins = np.arange(nbins + 1) * joinFactor + 0.5
         ax2.hist(
-            np.array([rowNnz, colNnz]).T,
+            [rowNnz, colNnz],
             bins,
             rwidth=1,
             color=["k", "r"],
@@ -1859,9 +1858,12 @@ def CreateReport(
             i,
             defaultChoiceParams,
         )
+        m, n = matrixData.matrix.shape
+        nnz = matrixData.matrix.getnnz()
         print(
             f"[{i + 1}/{nmats}] {params.name} "
-            f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[0]}"
+            f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
+            f"nnz={matrixData.matrix.getnnz():11.4e} ({nnz / (m * n) * 100:8.4f}%)"
         )
 
         lines = CreateLine(matrixData.matrix, params, outDir, verbose)
