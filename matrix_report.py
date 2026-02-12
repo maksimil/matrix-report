@@ -110,15 +110,19 @@ class ShadeParams:
 class ColormapParams:
     scale: Literal["log", "linear"] = "log"
     zeroTol: float = 0
-    minColor: float = 1e-16
-    maxColor: float = 1e5
+    minColor: float = 1e-12
+    maxPosColor: float | NoneType = None
+    maxNegColor: float | NoneType = None
+    aggRule: Literal["max", "avg"] = "max"
+
+    def SetMax(self, pos, neg):
+        if self.maxPosColor is None:
+            self.maxPosColor = pos
+        if self.maxNegColor is None:
+            self.maxNegColor = -neg
 
 
-def ScaleValue(colormap: ColormapParams, v: float):
-    scale = colormap.scale
-    minv = colormap.minColor
-    maxv = colormap.maxColor
-
+def ScaleValue(scale, minv, maxv, v: float):
     if scale == "log":
         vscaled = math.log10(v / minv + 1)
         mscaled = math.log10(maxv / minv + 1)
@@ -135,8 +139,8 @@ def GetValuesColor(values: list[float], colormap: ColormapParams):
     if type(values) is float:
         values = [values]
 
-    pos = [v for v in values if v > colormap.zeroTol]
-    neg = [v for v in values if v < -colormap.zeroTol]
+    pos = [+v for v in values if +v > colormap.zeroTol]
+    neg = [-v for v in values if -v > colormap.zeroTol]
 
     if len(values) == 0:
         return (1, 1, 1)
@@ -144,14 +148,27 @@ def GetValuesColor(values: list[float], colormap: ColormapParams):
     if colormap.zeroTol == 0 and len(pos) + len(neg) == 0:
         return (1, 1, 0)  # yellow
 
-    posAvg = sum(pos) / len(pos) if len(pos) > 0 else 0
-    negAvg = sum(neg) / len(neg) if len(neg) > 0 else 0
+    posV, negV = 0, 0
+    if len(pos) > 0:
+        if colormap.aggRule == "max":
+            posV = max(pos)
+        elif colormap.aggRule == "avg":
+            posV = sum(pos) / len(pos)
+        else:
+            print(f"WARN: invalid aggRule={colormap.aggRule}")
+    if len(neg) > 0:
+        if colormap.aggRule == "max":
+            negV = max(neg)
+        elif colormap.aggRule == "avg":
+            negV = sum(neg) / len(neg)
+        else:
+            print(f"WARN: invalid aggRule={colormap.aggRule}")
 
-    if posAvg < colormap.minColor and -negAvg < colormap.minColor:
+    if posV < colormap.minColor and negV < colormap.minColor:
         return (0, 1, 0)  # green
 
-    red = ScaleValue(colormap, posAvg)
-    blu = ScaleValue(colormap, -negAvg)
+    red = ScaleValue(colormap.scale, colormap.minColor, colormap.maxPosColor, posV)
+    blu = ScaleValue(colormap.scale, colormap.minColor, colormap.maxNegColor, negV)
 
     return (red, 0, blu)
 
@@ -801,6 +818,8 @@ def CreateLine(
         )
         imageData = np.zeros((pxRows, pxCols, 3))
 
+        params.colorParams.colormap.SetMax(maxPos, minNeg)
+
         def Process(ib, jb, r, c, values):
             color = GetValuesColor(list(values), params.colorParams.colormap)
             imageData[ib, jb] = color
@@ -882,6 +901,8 @@ def CreateLine(
         logger.StartSection("Scatter image")
 
         filepath = imagePrefix + "-scatter.png"
+
+        params.scatterParams.colormap.SetMax(maxPos, minNeg)
 
         fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -1235,8 +1256,22 @@ def CreateLine(
             nZero += 1
         nzData = nzData[nZero:]
 
-        sparsity = ((nnz - nZero) - np.arange(nzData.shape[0])) / (m * n) * 100
-        frobNorm = np.sqrt(np.cumsum(np.square(nzData)))
+        dnnz = len(nzData)
+        tols = np.zeros(2 * (dnnz + 1))
+        sparsity = np.zeros(2 * (dnnz + 1))
+        frobNorm = np.zeros(2 * (dnnz + 1))
+
+        tols[0] = nzData[0] / 2
+        tols[1 : 2 * dnnz + 1 : 2] = nzData
+        tols[2 : 2 * dnnz + 1 : 2] = tols[1 : 2 * dnnz + 1 : 2]
+        tols[-1] = nzData[-1] * 2
+
+        sparsity[0::2] = (dnnz - np.arange(dnnz + 1)) / (m * n) * 100
+        sparsity[1::2] = sparsity[::2]
+
+        frobNorm[0] = 0
+        frobNorm[2::2] = np.sqrt(np.cumsum(np.square(nzData)))
+        frobNorm[1::2] = frobNorm[::2]
 
         fig, ax1 = plt.subplots(figsize=(8, 8))
         ax2 = ax1.twinx()
@@ -1249,8 +1284,8 @@ def CreateLine(
         )
         ax2.set(ylabel="Sparsity, %")
 
-        p1 = ax1.plot(nzData, frobNorm, "k-", label="Frobenius norm")
-        p2 = ax2.plot(nzData, sparsity, "r-", label="Sparsity")
+        p1 = ax1.plot(tols, frobNorm, "k-", label="Frobenius norm")
+        p2 = ax2.plot(tols, sparsity, "r-", label="Sparsity")
 
         lns = p1 + p2
         ax1.legend(lns, [e.get_label() for e in lns])
@@ -1518,7 +1553,7 @@ class DefaultChoiceParams:
     limitCond: MatrixLimit = MatrixLimit(maxNNZ=10_000)
 
     defaultSpectrumParams: SpectrumParams = SpectrumParams()
-    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=5_000)
+    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=1_000)
 
     defaultSparsifyParams: SparsifyParams = SparsifyParams()
     limitSparsify: MatrixLimit = MatrixLimit()
