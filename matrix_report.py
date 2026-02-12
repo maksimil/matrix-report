@@ -13,6 +13,7 @@ from types import NoneType
 from typing import Literal
 from collections.abc import Callable
 import importlib
+import copy
 
 # -------------------------
 # --- Global parameters ---
@@ -27,6 +28,7 @@ SEED = 42
 PLOT_DPI = 200
 MIN_PNG_SIZE = 1024
 MAX_HIST_BINS = 100
+LOG_SCALE_BLACK = 10
 
 # -----------------------------
 # --- Optional dependencies ---
@@ -106,6 +108,25 @@ class ShadeParams:
         return ShadeParams(enabled=False)
 
 
+def GetShadeColor(t, shadeParams):
+    if shadeParams.scale != "linear":
+        print("WARN: only linear shade scaling is supported")
+
+    white = np.array([1.0, 1.0, 1.0])
+    black = np.array([0.0, 0.0, 0.0])
+    red = np.array([1.0, 0.0, 0.0])
+
+    color = white
+    if t <= 0:
+        pass
+    elif t < 0.5:
+        color += (red - white) * (t + 0.1)
+    else:
+        color += (black - white) * t
+
+    return color
+
+
 @dataclass
 class ColormapParams:
     scale: Literal["log", "linear"] = "log"
@@ -124,9 +145,11 @@ class ColormapParams:
 
 def ScaleValue(scale, minv, maxv, v: float):
     if scale == "log":
-        vscaled = math.log10(v / minv + 1)
-        mscaled = math.log10(maxv / minv + 1)
-        return min(vscaled / mscaled, 1)
+        if v <= minv:
+            return 0
+        vlog = math.log10(v / maxv)
+        vscaled = vlog / LOG_SCALE_BLACK + 1
+        return np.clip(vscaled, 0, 1)
 
     if scale == "linear":
         vscaled = (v - minv) / (maxv - minv)
@@ -173,12 +196,16 @@ def GetValuesColor(values: list[float], colormap: ColormapParams):
     return (red, 0, blu)
 
 
+def FieldFactory(f):
+    return dataclasses.field(default_factory=f)
+
+
 @dataclass
 class ColorParams:
     enabled: bool = True
     pxRows: int = -1
     pxCols: int = DEFAULT_PX_COLS
-    colormap: ColormapParams = ColormapParams()
+    colormap: ColormapParams = FieldFactory(lambda: ColormapParams())
 
     def Disabled():
         return ColorParams(enabled=False)
@@ -189,7 +216,7 @@ class ScatterParams:
     enabled: bool = True
     alpha: float = 0.2
     pointSize: float = 10
-    colormap: ColorParams = ColormapParams()
+    colormap: ColorParams = FieldFactory(lambda: ColormapParams())
 
     def Disabled():
         return ColorParams(enabled=False)
@@ -252,8 +279,8 @@ class BlockParams:
     maxR: int = 16
     maxC: int = 16
 
-    checkRC: list[tuple[int, int]] = dataclasses.field(
-        default_factory=lambda: [(1, 1), (2, 1), (4, 1), (8, 1)]
+    checkRC: list[tuple[int, int]] = FieldFactory(
+        lambda: [(1, 1), (2, 1), (4, 1), (8, 1)]
     )
 
     cacheSize: int = 64
@@ -817,7 +844,6 @@ def CreateLine(
             params.colorParams.pxRows, params.colorParams.pxCols, m, n
         )
         imageData = np.zeros((pxRows, pxCols, 3))
-
         params.colorParams.colormap.SetMax(maxPos, minNeg)
 
         def Process(ib, jb, r, c, values):
@@ -863,21 +889,11 @@ def CreateLine(
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
 
         maxDensity = densityData.max()
-        white = np.array([1, 1, 1])
-        black = np.array([0, 0, 0])
-        red = np.array([1, 0, 0])
 
         for ib in range(pxRows):
             for jb in range(pxCols):
                 z = densityData[ib, jb] / maxDensity
-                color = None
-                if z == 0:
-                    color = white
-                elif z < 0.5:
-                    color = white + (red - white) * (z + 0.1)
-                else:
-                    color = white + (black - white) * z
-                imageData[ib, jb] = color
+                imageData[ib, jb] = GetShadeColor(z, params.shadeParams)
 
         SaveImage(os.path.join(outDir, filepath), imageData)
 
@@ -1507,6 +1523,65 @@ def CreateLine(
     return line
 
 
+def CreatePalettes(outDir):
+    MINV = ColormapParams().minColor * 1e-1
+    MAXV = 1
+    COLOR_STEPS = int(np.log10(MAXV) - np.log10(MINV)) * 1
+    SHADE_STEPS = 2 * 10 + 1
+
+    filepath = os.path.join(IMAGE_DIR, "palette.png")
+    fig, axs = plt.subplots(1, 2, width_ratios=[7, 1], figsize=(8, 7))
+    ax1, ax2 = axs.flatten()
+
+    colormap = ColormapParams()
+    colormap.SetMax(MAXV, -MAXV)
+
+    x = np.geomspace(MINV, MAXV, 2 * COLOR_STEPS + 1)
+    y = x
+
+    c = np.zeros((COLOR_STEPS, COLOR_STEPS, 3))
+    for i in range(COLOR_STEPS):
+        for j in range(COLOR_STEPS):
+            c[i, j] = GetValuesColor([x[2 * j + 1], -y[2 * i + 1]], colormap)
+
+    x = x[::2]
+    y = y[::2]
+
+    ax1.set(
+        title="Color",
+        xlabel="Positive",
+        xscale="log",
+        ylabel="Negative",
+        yscale="log",
+    )
+    ax1.pcolormesh(x, y, c, shading="flat")
+
+    shadeParams = ShadeParams()
+
+    x = [0, 1]
+    y = np.linspace(-1 / (SHADE_STEPS - 1), 1, 2 * SHADE_STEPS + 1)
+
+    c = np.zeros((SHADE_STEPS, 1, 3))
+    for i in range(SHADE_STEPS):
+        c[i, 0] = GetShadeColor(y[2 * i + 1], shadeParams)
+
+    y = y[::2]
+    ax2.set(title="Shade", xticks=[], yticks=np.linspace(0, 1, 11))
+    ax2.pcolormesh(x, y, c, shading="flat")
+
+    fig.tight_layout()
+    SaveFig(os.path.join(outDir, filepath), fig)
+    plt.close(fig)
+
+    html = (
+        ""
+        + '<tr class="page-break"><td><tt><b>Color palette</b></tt></td></tr>'
+        + f'<tr><td><img src="{filepath}" /></td></tr>'
+    )
+
+    return html
+
+
 # ----------------------
 # --- Default choice ---
 
@@ -1534,35 +1609,37 @@ class MatrixLimit:
 
 @dataclass
 class DefaultChoiceParams:
-    defaultColorParams: ColorParams = ColorParams()
-    limitColor: MatrixLimit = MatrixLimit()
+    defaultColorParams: ColorParams = FieldFactory(lambda: ColorParams())
+    limitColor: MatrixLimit = FieldFactory(lambda: MatrixLimit())
 
-    defaultShadeParams: ShadeParams = ShadeParams()
-    limitShade: MatrixLimit = MatrixLimit()
+    defaultShadeParams: ShadeParams = FieldFactory(lambda: ShadeParams())
+    limitShade: MatrixLimit = FieldFactory(lambda: MatrixLimit())
 
-    defaultScatterParams: ScatterParams = ScatterParams()
-    limitScatter: MatrixLimit = MatrixLimit(maxNNZ=100_000)
+    defaultScatterParams: ScatterParams = FieldFactory(lambda: ScatterParams())
+    limitScatter: MatrixLimit = FieldFactory(lambda: MatrixLimit(maxNNZ=100_000))
 
-    defaultHistParams: HistParams = HistParams()
-    limitHist: MatrixLimit = MatrixLimit()
+    defaultHistParams: HistParams = FieldFactory(lambda: HistParams())
+    limitHist: MatrixLimit = FieldFactory(lambda: MatrixLimit())
 
-    defaultSingularParams: SingularParams = SingularParams()
-    limitSingular: MatrixLimit = MatrixLimit.Square(n=1_000)
+    defaultSingularParams: SingularParams = FieldFactory(lambda: SingularParams())
+    limitSingular: MatrixLimit = FieldFactory(lambda: MatrixLimit.Square(n=1_000))
 
-    defaultCondParams: CondParams = CondParams()
-    limitCond: MatrixLimit = MatrixLimit(maxNNZ=10_000)
+    defaultCondParams: CondParams = FieldFactory(lambda: CondParams())
+    limitCond: MatrixLimit = FieldFactory(lambda: MatrixLimit(maxNNZ=10_000))
 
-    defaultSpectrumParams: SpectrumParams = SpectrumParams()
-    limitSpectrum: MatrixLimit = MatrixLimit.Square(n=1_000)
+    defaultSpectrumParams: SpectrumParams = FieldFactory(lambda: SpectrumParams())
+    limitSpectrum: MatrixLimit = FieldFactory(lambda: MatrixLimit.Square(n=1_000))
 
-    defaultSparsifyParams: SparsifyParams = SparsifyParams()
-    limitSparsify: MatrixLimit = MatrixLimit()
+    defaultSparsifyParams: SparsifyParams = FieldFactory(lambda: SparsifyParams())
+    limitSparsify: MatrixLimit = FieldFactory(lambda: MatrixLimit())
 
-    defaultBlockParams: BlockParams = BlockParams()
-    limitBlock: MatrixLimit = MatrixLimit()
+    defaultBlockParams: BlockParams = FieldFactory(lambda: BlockParams())
+    limitBlock: MatrixLimit = FieldFactory(lambda: MatrixLimit())
 
-    defaultGraphParams: GraphParams = GraphParams()
-    limitGraph: MatrixLimit = MatrixLimit.Square(n=1_000, nnz=10_000)
+    defaultGraphParams: GraphParams = FieldFactory(lambda: GraphParams())
+    limitGraph: MatrixLimit = FieldFactory(
+        lambda: MatrixLimit.Square(n=1_000, nnz=10_000)
+    )
 
 
 BLOCKS_PRESET = DefaultChoiceParams(
@@ -1628,7 +1705,7 @@ def FillDefaultParams(
     def EnableIf(param, default, limit):
         if param is None:
             if limit.IsWithin(matrix):
-                return default
+                return copy.deepcopy(default)
             else:
                 return type(default).Disabled()
         else:
@@ -1764,6 +1841,8 @@ def CreateReport(
         + "@media print { .page-break { break-before: page; } }\n"
         + "</style><body><table>"
     )
+
+    output += CreatePalettes(outDir)
 
     nmats = len(matrices)
     for i in range(nmats):
