@@ -579,6 +579,44 @@ def CountKrc(
     return krc, counts
 
 
+@jit
+def CountBlocksNnz(
+    m: int,
+    n: int,
+    rowPtr: np.ndarray,
+    col: np.ndarray,
+    values: np.ndarray,
+    tol: float,
+    r: int,
+    c: int,
+):
+    blocksNnz = np.zeros(r * c, dtype=np.int64)
+    maxBNnz = 0
+
+    for ib in range((m + r - 1) // r):
+        i = ib * r
+        mb = min(i + r, m) - i
+        (_, counts) = CountKrc(
+            mb,
+            n,
+            rowPtr[i : i + mb + 1],
+            col,
+            values,
+            tol,
+            [r],
+            [c],
+        )
+
+        for jb in range((n + c - 1) // c):
+            bnnz = counts[0, 0, jb]
+            if bnnz != 0:
+                blocksNnz[bnnz - 1] += 1
+                maxBNnz = max(maxBNnz, bnnz)
+
+    blocksNnz = blocksNnz[:maxBNnz]
+    return blocksNnz
+
+
 def ViewMatrix(rotation: float):
     PLANE_ANGLE = 0.3
 
@@ -739,13 +777,15 @@ class HTMLOutput:
 
 
 class VerboseLogger:
+    name: str
     startTime: float
     sectionTime: float
     sectionName: float
     verbose: bool
 
-    def __init__(self):
+    def __init__(self, name):
         self.startTime = time.perf_counter()
+        self.name = name
 
     def StartSection(self, name):
         self.sectionTime = time.perf_counter()
@@ -754,12 +794,12 @@ class VerboseLogger:
     def FinishSection(self):
         now = time.perf_counter()
         ela = now - self.sectionTime
-        print(f"-> {self.sectionName:20s} ({ela:6.2f} s)")
+        print(f"[{self.name:20s}] {self.sectionName:20s} ({ela:6.2f} s)")
 
     def Finish(self):
         now = time.perf_counter()
         ela = now - self.startTime
-        print(f"{'Finished all':23s} ({ela:6.2f} s)")
+        print(f"[{self.name:20s}] {'Finished all':20s} ({ela:6.2f} s)")
 
 
 class NoLogger:
@@ -785,7 +825,7 @@ def CreateLine(
     logger = NoLogger()
 
     if verbose:
-        logger = VerboseLogger()
+        logger = VerboseLogger(params.name)
 
     # --- Basic info ---
 
@@ -966,30 +1006,18 @@ def CreateLine(
         filepath = imagePrefix + "-hist.png"
 
         r, c = params.histParams.blockR, params.histParams.blockC
-        blocksNnz = np.zeros(r * c, dtype=np.int64)
-        maxBNnz = 0
 
-        for ib in range((m + r - 1) // r):
-            i = ib * r
-            mb = min(i + r, m) - i
-            (_, counts) = CountKrc(
-                mb,
-                n,
-                matrix.indptr[i : i + mb + 1],
-                matrix.indices,
-                matrix.data,
-                params.histParams.zeroTol,
-                [r],
-                [c],
-            )
-
-            for jb in range((n + c - 1) // c):
-                bnnz = counts[0, 0, jb]
-                if bnnz != 0:
-                    blocksNnz[bnnz - 1] += 1
-                    maxBNnz = max(maxBNnz, bnnz)
-
-        blocksNnz = blocksNnz[:maxBNnz]
+        blocksNnz = CountBlocksNnz(
+            m,
+            n,
+            matrix.indptr,
+            matrix.indices,
+            matrix.data,
+            params.histParams.zeroTol,
+            r,
+            c,
+        )
+        maxBNnz = len(blocksNnz)
 
         rowNnz, colNnz = CountRowColNnz(
             m,
@@ -1599,6 +1627,12 @@ class MatrixLimit:
     def Disabled():
         return MatrixLimit(maxNNZ=-1)
 
+    def FDisabled():
+        return FieldFactory(lambda: MatrixLimit.Disabled())
+
+    def FEnabled():
+        return FieldFactory(lambda: MatrixLimit())
+
     def IsWithin(self, matrix: CSRMatrix):
         n, m = matrix.shape
         nnz = matrix.getnnz()
@@ -1609,45 +1643,34 @@ class MatrixLimit:
 @dataclass
 class DefaultChoiceParams:
     defaultColorParams: ColorParams = FieldFactory(lambda: ColorParams())
-    limitColor: MatrixLimit = FieldFactory(lambda: MatrixLimit())
+    limitColor: MatrixLimit = MatrixLimit.FEnabled()
 
     defaultShadeParams: ShadeParams = FieldFactory(lambda: ShadeParams())
-    limitShade: MatrixLimit = FieldFactory(lambda: MatrixLimit())
+    limitShade: MatrixLimit = MatrixLimit.FEnabled()
 
     defaultScatterParams: ScatterParams = FieldFactory(lambda: ScatterParams())
-    limitScatter: MatrixLimit = FieldFactory(lambda: MatrixLimit(maxNNZ=100_000))
+    limitScatter: MatrixLimit = MatrixLimit.FDisabled()
 
     defaultHistParams: HistParams = FieldFactory(lambda: HistParams())
-    limitHist: MatrixLimit = FieldFactory(lambda: MatrixLimit())
+    limitHist: MatrixLimit = MatrixLimit.FEnabled()
 
     defaultSingularParams: SingularParams = FieldFactory(lambda: SingularParams())
-    limitSingular: MatrixLimit = FieldFactory(lambda: MatrixLimit.Square(n=1_000))
+    limitSingular: MatrixLimit = MatrixLimit.FDisabled()
 
     defaultCondParams: CondParams = FieldFactory(lambda: CondParams())
-    limitCond: MatrixLimit = FieldFactory(lambda: MatrixLimit(maxNNZ=10_000))
+    limitCond: MatrixLimit = MatrixLimit.FDisabled()
 
     defaultSpectrumParams: SpectrumParams = FieldFactory(lambda: SpectrumParams())
-    limitSpectrum: MatrixLimit = FieldFactory(lambda: MatrixLimit.Square(n=1_000))
+    limitSpectrum: MatrixLimit = MatrixLimit.FDisabled()
 
     defaultSparsifyParams: SparsifyParams = FieldFactory(lambda: SparsifyParams())
-    limitSparsify: MatrixLimit = FieldFactory(lambda: MatrixLimit())
+    limitSparsify: MatrixLimit = MatrixLimit.FEnabled()
 
     defaultBlockParams: BlockParams = FieldFactory(lambda: BlockParams())
-    limitBlock: MatrixLimit = FieldFactory(lambda: MatrixLimit())
+    limitBlock: MatrixLimit = MatrixLimit.FEnabled()
 
     defaultGraphParams: GraphParams = FieldFactory(lambda: GraphParams())
-    limitGraph: MatrixLimit = FieldFactory(
-        lambda: MatrixLimit.Square(n=1_000, nnz=10_000)
-    )
-
-
-BLOCKS_PRESET = DefaultChoiceParams(
-    limitScatter=MatrixLimit.Disabled(),
-    limitSingular=MatrixLimit.Disabled(),
-    limitCond=MatrixLimit.Disabled(),
-    limitSpectrum=MatrixLimit.Disabled(),
-    limitGraph=MatrixLimit.Disabled(),
-)
+    limitGraph: MatrixLimit = MatrixLimit.FDisabled()
 
 
 def LoadMatrix(loader: MatrixDescType | MatrixLoader):
@@ -1819,6 +1842,39 @@ def FillDefaultParams(
 # --- Entrypoints ---
 
 
+def ProcessParams(
+    i: int,
+    nmats: int,
+    params: ReportParams,
+    outDir: str,
+    defaultChoiceParams: DefaultChoiceParams,
+    verbose: bool,
+):
+    matrixData = LoadMatrix(params.matrix)
+    if matrixData is None:
+        print(f"[{i + 1}/{nmats}] Matrix {i} with params {params} not loaded")
+        return ""
+
+    params = FillDefaultParams(
+        params,
+        matrixData.matrix,
+        matrixData.name,
+        i,
+        defaultChoiceParams,
+    )
+    m, n = matrixData.matrix.shape
+    nnz = matrixData.matrix.getnnz()
+    print(
+        f"[{i + 1}/{nmats}] {params.name} "
+        f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
+        f"nnz={matrixData.matrix.getnnz():11.4e} ({nnz / (m * n) * 100:8.4f}%)"
+    )
+
+    lines = CreateLine(matrixData.matrix, params, outDir, verbose)
+
+    return lines
+
+
 def CreateReport(
     matrices: list[ReportParams],
     outDir: str,
@@ -1844,31 +1900,17 @@ def CreateReport(
     output += CreatePalettes(outDir)
 
     nmats = len(matrices)
+    with multiprocessing.Pool() as p:
+        lines = p.starmap(
+            ProcessParams,
+            [
+                (i, nmats, matrices[i], outDir, defaultChoiceParams, verbose)
+                for i in range(nmats)
+            ],
+        )
+
     for i in range(nmats):
-        params = matrices[i]
-        matrixData = LoadMatrix(params.matrix)
-        if matrixData is None:
-            print(f"[{i + 1}/{nmats}] Matrix {i} with params {params} not loaded")
-            continue
-
-        params = FillDefaultParams(
-            params,
-            matrixData.matrix,
-            matrixData.name,
-            i,
-            defaultChoiceParams,
-        )
-        m, n = matrixData.matrix.shape
-        nnz = matrixData.matrix.getnnz()
-        print(
-            f"[{i + 1}/{nmats}] {params.name} "
-            f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
-            f"nnz={matrixData.matrix.getnnz():11.4e} ({nnz / (m * n) * 100:8.4f}%)"
-        )
-
-        lines = CreateLine(matrixData.matrix, params, outDir, verbose)
-
-        output += lines
+        output += lines[i]
 
     output += "</table></body></html>"
 
