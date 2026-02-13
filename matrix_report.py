@@ -28,6 +28,7 @@ SEED = 42
 PLOT_DPI = 200
 MIN_PNG_SIZE = 1024
 MAX_HIST_BINS = 100
+HIST_ALPHA = 0.7
 LOG_SCALE_BLACK = 10
 
 # -----------------------------
@@ -446,19 +447,47 @@ def ComputeImageSize(pxRows_, pxCols_, m, n):
     return pxRows, pxCols
 
 
-@jit
+tps = None
+if JIT_ENABLED:
+    tps = [
+        (
+            numba.int64,
+            numba.int64,
+            numba.int32[:],
+            numba.int32[:],
+            numba.float64[:],
+            numba.int64,
+            numba.int64,
+            numba.int64,
+        ),
+        (
+            numba.int64,
+            numba.int64,
+            numba.int64[:],
+            numba.int64[:],
+            numba.float64[:],
+            numba.int64,
+            numba.int64,
+            numba.int64,
+        ),
+    ]
+
+
+@jitEager(tps)
 def FormPxBlockLine(
     m: int,
     n: int,
     rowPtr: np.ndarray,
     col: np.ndarray,
     values: np.ndarray,
-    rowPx: np.ndarray,
-    rowPxSize: np.ndarray,
     iStart: int,
     iEnd: int,
     pxCols: int,
 ):
+    pxSize = (iEnd - iStart) * int(math.ceil(n / pxCols))
+    rowPx = np.zeros((pxCols, pxSize))
+    rowPxSize = np.zeros(pxCols, dtype=np.int64)
+
     for p in range(iEnd - iStart):
         i = iStart + p
         start = rowPtr[i]
@@ -471,27 +500,22 @@ def FormPxBlockLine(
             rowPx[jb, rowPxSize[jb]] = v
             rowPxSize[jb] += 1
 
+    return rowPx, rowPxSize
+
 
 def ProcessPixelBlocks(pxRows, pxCols, matrix, process):
     m, n = matrix.shape
 
-    pxSize = int(math.ceil(m / pxRows)) * int(math.ceil(n / pxCols))
-
     for ib in range(pxRows):
-        rowPx = np.zeros((pxCols, pxSize))
-        rowPxSize = np.zeros(pxCols, dtype=int)
-
         iStart = int(math.ceil(ib * m / pxRows))
         iEnd = min(int(math.ceil((ib + 1) * m / pxRows)), m)
 
-        FormPxBlockLine(
+        rowPx, rowPxSize = FormPxBlockLine(
             m,
             n,
             matrix.indptr,
             matrix.indices,
             matrix.data,
-            rowPx,
-            rowPxSize,
             iStart,
             iEnd,
             pxCols,
@@ -1089,7 +1113,6 @@ def CreateLine(
             bins,
             weights=blocksNnz / sum(blocksNnz),
             color="k",
-            edgecolor="r",
         )
 
         ax2.set(
@@ -1105,7 +1128,7 @@ def CreateLine(
             )
         minV = min(minPos, -maxNeg)
         maxV = max(maxPos, -minNeg)
-        nbins = MAX_HIST_BINS // 2
+        nbins = MAX_HIST_BINS
         bins = None
         if params.histParams.nzXScale != "log":
             bins = np.linspace(minV, maxV, nbins + 1)
@@ -1120,11 +1143,12 @@ def CreateLine(
                 np.repeat(1, len(posData)) / nnz,
                 np.repeat(1, len(negData)) / nnz,
             ],
-            rwidth=1,
+            histtype="stepfilled",
             color=["r", "b"],
+            alpha=HIST_ALPHA,
             label=["positive", "negative"],
         )
-        ax2.legend()
+        ax2.legend(reverse=True)
 
         fig.tight_layout()
         SaveFig(os.path.join(outDir, filepath), fig)
@@ -1145,19 +1169,20 @@ def CreateLine(
             xlabel="Nnz",
             yscale=params.histParams.axNnzScale,
         )
-        joinFactor = int(np.ceil((maxAxNnz + 1) / (MAX_HIST_BINS // 2)))
+        joinFactor = int(np.ceil((maxAxNnz + 1) / MAX_HIST_BINS))
         nbins = ((maxAxNnz + 1) + joinFactor - 1) // joinFactor
         bins = np.arange(nbins + 1) * joinFactor - 0.5
         ax1.hist(
             [rowNnz, colNnz],
             bins,
             weights=[np.repeat(1, m) / m, np.repeat(1, n) / n],
-            rwidth=1,
+            histtype="stepfilled",
             color=["k", "r"],
+            alpha=HIST_ALPHA,
             label=["row", "col"],
         )
         ax1.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-        ax1.legend()
+        ax1.legend(reverse=True)
 
         ax2.set(
             title="Row and col norms",
@@ -1165,7 +1190,7 @@ def CreateLine(
             xscale=params.histParams.axNormXScale,
             yscale=params.histParams.axNormScale,
         )
-        nbins = MAX_HIST_BINS // 2
+        nbins = MAX_HIST_BINS
         bins = None
         minV = min(rowNorms.min(), colNorms.min())
         maxV = max(rowNorms.max(), colNorms.max())
@@ -1182,7 +1207,7 @@ def CreateLine(
                 ax2.set_title(
                     "Row and col norms (excluded "
                     + f"{exRows * 100:.4f}% rows, "
-                    + f"{exCols * 100:.4f}% cols"
+                    + f"{exCols * 100:.4f}% cols)"
                 )
             bins = np.geomspace(minV, maxV, nbins)
         if minV == maxV:
@@ -1194,9 +1219,12 @@ def CreateLine(
                 np.repeat(1, len(rowNorms)) / m,
                 np.repeat(1, len(colNorms)) / n,
             ],
-            rwidth=1,
+            histtype="stepfilled",
             color=["k", "r"],
+            alpha=HIST_ALPHA,
+            label=["row", "col"],
         )
+        ax2.legend(reverse=True)
 
         fig.tight_layout()
         SaveFig(os.path.join(outDir, filepath), fig)
