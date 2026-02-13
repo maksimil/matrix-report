@@ -15,6 +15,7 @@ from collections.abc import Callable
 import importlib
 import copy
 import itertools
+import PIL
 
 # -------------------------
 # --- Global parameters ---
@@ -65,23 +66,17 @@ else:
         return numba.njit(f, cache=True)
 
     def jitEager(*args, **kwargs):
-        def dec(f):
-            return numba.njit(*args, **kwargs, cache=True)(f)
-
-        return dec
+        return numba.njit(*args, **kwargs, cache=True)
 
 # Graph
 
 nx = None
-PIL = None
 aggdraw = None
 
 if importlib.util.find_spec("networkx") is None:
-    print("WARN: install networkx, PIL and aggdraw to use graph layouts")
+    print("WARN: install networkx and aggdraw to use graph layouts")
 else:
     import networkx as nx
-    import PIL
-    import PIL.Image
     import aggdraw
 
     GRAPH_ENABLED = True
@@ -120,21 +115,22 @@ class ShadeParams:
         return ShadeParams(enabled=False)
 
 
+COLOR_WHITE = np.array([1.0, 1.0, 1.0])
+COLOR_BLACK = np.array([0.0, 0.0, 0.0])
+COLOR_RED = np.array([1.0, 0.0, 0.0])
+
+
 def GetShadeColor(t, shadeParams):
     if shadeParams.scale != "linear":
         print("WARN: only linear shade scaling is supported")
 
-    white = np.array([1.0, 1.0, 1.0])
-    black = np.array([0.0, 0.0, 0.0])
-    red = np.array([1.0, 0.0, 0.0])
-
-    color = white
+    color = COLOR_WHITE
     if t <= 0:
         pass
     elif t < 0.5:
-        color += (red - white) * (t + 0.1)
+        color += (COLOR_RED - COLOR_WHITE) * (t + 0.1)
     else:
-        color += (black - white) * t
+        color += (COLOR_BLACK - COLOR_WHITE) * t
 
     return color
 
@@ -142,7 +138,7 @@ def GetShadeColor(t, shadeParams):
 @dataclass
 class ColormapParams:
     scale: Literal["log", "linear"] = "log"
-    zeroTol: float = 0
+    zeroTol: float = -1
     minColor: float = 1e-12
     maxPosColor: float | NoneType = None
     maxNegColor: float | NoneType = None
@@ -170,34 +166,32 @@ def ScaleValue(scale, minv, maxv, v: float):
     return None
 
 
-def GetValuesColor(values: list[float], colormap: ColormapParams):
-    if type(values) is float:
-        values = [values]
+def Aggregate(values: np.ndarray, rule: str):
+    if rule == "max":
+        return values.max()
+    elif rule == "avg":
+        return values.sum() / len(values)
+    else:
+        print(f"WARN: invalid aggRule={rule}")
+        return np.nan
 
-    pos = [+v for v in values if +v > colormap.zeroTol]
-    neg = [-v for v in values if -v > colormap.zeroTol]
 
+def GetValuesColor(values: np.ndarray, colormap: ColormapParams):
     if len(values) == 0:
         return (1, 1, 1)
 
-    if colormap.zeroTol == 0 and len(pos) + len(neg) == 0:
+    absMask = np.abs(values) > colormap.zeroTol
+    pos = values[(values > 0) & absMask]
+    neg = -values[(values < 0) & absMask]
+
+    if colormap.zeroTol < 0 and len(pos) + len(neg) == 0:
         return (1, 1, 0)  # yellow
 
     posV, negV = 0, 0
     if len(pos) > 0:
-        if colormap.aggRule == "max":
-            posV = max(pos)
-        elif colormap.aggRule == "avg":
-            posV = sum(pos) / len(pos)
-        else:
-            print(f"WARN: invalid aggRule={colormap.aggRule}")
+        posV = Aggregate(pos, colormap.aggRule)
     if len(neg) > 0:
-        if colormap.aggRule == "max":
-            negV = max(neg)
-        elif colormap.aggRule == "avg":
-            negV = sum(neg) / len(neg)
-        else:
-            print(f"WARN: invalid aggRule={colormap.aggRule}")
+        negV = Aggregate(neg, colormap.aggRule)
 
     if posV < colormap.minColor and negV < colormap.minColor:
         return (0, 1, 0)  # green
@@ -295,7 +289,7 @@ class SparsifyParams:
 @dataclass
 class BlockParams:
     enabled: bool = True
-    tol: float = 0
+    zeroTol: float = 0
     maxR: int = 16
     maxC: int = 16
 
@@ -542,7 +536,12 @@ def SaveImage(path, data):
 
     imageData = np.kron(data, multMat)
 
-    plt.imsave(path, imageData)
+    #  plt.imsave(path, imageData)
+
+    if imageData.dtype != np.int8:
+        imageData = (imageData * 255).astype(np.int8)
+    im = PIL.Image.frombytes("RGB", imageData.shape[:2], imageData.flatten())
+    im.save(path, "PNG")
 
 
 def SaveFig(path, fig):
@@ -952,7 +951,7 @@ def CreateLine(
         params.colorParams.colormap.SetMax(maxPos, minNeg)
 
         def Process(ib, jb, r, c, values):
-            color = GetValuesColor(list(values), params.colorParams.colormap)
+            color = GetValuesColor(values, params.colorParams.colormap)
             imageData[ib, jb] = color
 
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
@@ -978,20 +977,17 @@ def CreateLine(
         densityData = np.zeros((pxRows, pxCols))
         imageData = np.zeros((pxRows, pxCols, 3))
 
-        maxPxSize = np.zeros(1, dtype=int)
-        minPxSize = np.zeros(1, dtype=int)
-        minPxSize[0] = INT_MAX
-        maxFill = np.zeros(1, dtype=int)
+        maxFill = np.zeros(1, dtype=np.int64)
 
         def Process(ib, jb, r, c, values):
-            nzvalues = [v for v in values if abs(v) > params.shadeParams.zeroTol]
-            nnz = len(nzvalues)
-            densityData[ib, jb] = len(nzvalues) / (r * c)
-            maxPxSize[0] = max(r * c, maxPxSize[0])
-            minPxSize[0] = min(r * c, maxPxSize[0])
-            maxFill[0] = max(nnz, maxFill[0])
+            mask = np.abs(values) > params.shadeParams.zeroTol
+            bnnz = mask.sum()
+            densityData[ib, jb] = bnnz / (r * c)
+            maxFill[0] = max(bnnz, maxFill[0])
 
         ProcessPixelBlocks(pxRows, pxCols, matrix, Process)
+
+        maxFill = maxFill[0]
 
         maxDensity = densityData.max()
 
@@ -1002,6 +998,9 @@ def CreateLine(
 
         SaveImage(os.path.join(outDir, filepath), imageData)
 
+        minPxSize = int(math.floor(m / pxRows) * math.floor(n / pxCols))
+        maxPxSize = int(math.ceil(m / pxRows) * math.ceil(n / pxCols))
+
         figN = out.AddFigure(
             "Shade image", f'<img class="pixelated" src="{filepath}" />'
         )
@@ -1010,8 +1009,8 @@ def CreateLine(
             f"Shade data (Figure {figN})",
             ""
             + "max px fill =<br/>"
-            + f"{maxFill[0]:5d}/{minPxSize[0]:5d}-{maxPxSize[0]:5d} "
-            + f"({maxFill[0] / maxPxSize[0] * 100:8.4f}%)<br/>",
+            + f"{maxFill:5d}/{minPxSize:5d}-{maxPxSize:5d} "
+            + f"({maxDensity * 100:8.4f}%)<br/>",
         )
 
         logger.FinishSection()
@@ -1038,7 +1037,7 @@ def CreateLine(
                 k = start + kk
                 v = matrix.data[k]
                 j = matrix.indices[k]
-                color = GetValuesColor([v], params.scatterParams.colormap)
+                color = GetValuesColor(np.array([v]), params.scatterParams.colormap)
 
                 rows[k] = i
                 cols[k] = j
@@ -1491,7 +1490,7 @@ def CreateLine(
             matrix.indptr,
             matrix.indices,
             matrix.data,
-            params.blockParams.tol,
+            params.blockParams.zeroTol,
             [k + 1 for k in range(maxR)],
             [k + 1 for k in range(maxC)],
         )
@@ -1703,7 +1702,7 @@ def CreatePalettes(outDir):
     c = np.zeros((COLOR_STEPS, COLOR_STEPS, 3))
     for i in range(COLOR_STEPS):
         for j in range(COLOR_STEPS):
-            c[i, j] = GetValuesColor([x[2 * j + 1], -y[2 * i + 1]], colormap)
+            c[i, j] = GetValuesColor(np.array([x[2 * j + 1], -y[2 * i + 1]]), colormap)
 
     x = x[::2]
     y = y[::2]
