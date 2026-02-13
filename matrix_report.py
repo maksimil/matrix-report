@@ -238,7 +238,6 @@ class HistParams:
     blockR: int = 32
     blockC: int = 32
     zeroTol: float = 0
-    nzQ: float = 1.0
 
     #  blockScale: str = "log"
     #  nzScale: str = "log"
@@ -249,6 +248,9 @@ class HistParams:
     nzScale: str = "linear"
     axNnzScale: str = "linear"
     axNormScale: str = "linear"
+
+    nzXScale: str = "log"
+    axNormXScale: str = "log"
 
     def Disabled():
         return HistParams(enabled=False)
@@ -834,7 +836,10 @@ class VerboseLogger:
     def Finish(self):
         now = time.perf_counter()
         ela = now - self.startTime
-        print(f"\x1b[34m[{self.name:20s}] {'Finished all':20s}\x1b[0m ({ela:6.2f} s)")
+        print(
+            f"\x1b\x5b34m[{self.name:20s}] "
+            + f"{'Finished all':20s} ({ela:6.2f} s)\x1b\x5b0m"
+        )
 
 
 class NoLogger:
@@ -872,15 +877,15 @@ def CreateLine(
 
     imagePrefix = os.path.join(IMAGE_DIR, params.name)
 
-    posArr = matrix.data[matrix.data > 0]
-    negArr = matrix.data[matrix.data < 0]
+    posData = matrix.data[matrix.data > 0]
+    negData = matrix.data[matrix.data < 0]
     minPos, maxPos, minNeg, maxNeg = math.nan, math.nan, math.nan, math.nan
-    if len(posArr) > 0:
-        minPos = posArr.min()
-        maxPos = posArr.max()
-    if len(negArr) > 0:
-        minNeg = negArr.min()
-        maxNeg = negArr.max()
+    if len(posData) > 0:
+        minPos = posData.min()
+        maxPos = posData.max()
+    if len(negData) > 0:
+        minNeg = negData.min()
+        maxNeg = negData.max()
 
     matrixDense = None
 
@@ -901,7 +906,8 @@ def CreateLine(
         + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
         + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
         + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>"
-        + f"symmetry =<br/>{lo:8.4f}% / {struc:8.4f}% ({numeric:8.4f}%) / {up:8.4f}%<br/>"
+        + "symmetry =<br/>"
+        + f"{lo:8.4f}% / {struc:8.4f}% ({numeric:8.4f}%) / {up:8.4f}%<br/>"
         + f"size as CSR   = {csrSize:8.4f} {csrSizeUnits}<br/>"
         + f"size as Dense = {denseSize:8.4f} {denseSizeUnits}<br/>",
     )
@@ -1087,30 +1093,38 @@ def CreateLine(
         )
 
         ax2.set(
-            title=f"Entry values ({params.histParams.nzQ * 100}%)",
+            title="Entry values",
             xlabel="Value",
+            xscale=params.histParams.nzXScale,
             yscale=params.histParams.nzScale,
         )
-        nzData = matrix.data[:]
-        minV = nzData.min()
-        maxV = nzData.max()
-        if params.histParams.nzQ != 1.0:
-            nzData.sort()
-            s = (1 - params.histParams.nzQ) / 2
-            i0 = int(np.floor(nnz * s))
-            i1 = int(np.ceil(nnz * (1 - s)))
-            nzData = nzData[i0:i1]
-            minV = nzData[0]
-            maxV = nzData[-1]
-        nbins = MAX_HIST_BINS
-        bins = np.linspace(minV, maxV, nbins + 1)
+        dataEntries = len(posData) + len(negData)
+        if dataEntries != nnz:
+            ax2.set_title(
+                f"Entry values (excluded {(1 - dataEntries / nnz) * 100:.4f}% zeros)"
+            )
+        minV = min(minPos, -maxNeg)
+        maxV = max(maxPos, -minNeg)
+        nbins = MAX_HIST_BINS // 2
+        bins = None
+        if params.histParams.nzXScale != "log":
+            bins = np.linspace(minV, maxV, nbins + 1)
+        else:
+            bins = np.geomspace(minV, maxV, nbins + 1)
+        if minV == maxV:
+            bins = [minV / 2, maxV * 2]
         ax2.hist(
-            nzData,
+            [posData, -negData],
             bins,
-            weights=np.repeat(1, len(nzData)) / len(nzData),
-            color="k",
-            edgecolor="r",
+            weights=[
+                np.repeat(1, len(posData)) / nnz,
+                np.repeat(1, len(negData)) / nnz,
+            ],
+            rwidth=1,
+            color=["r", "b"],
+            label=["positive", "negative"],
         )
+        ax2.legend()
 
         fig.tight_layout()
         SaveFig(os.path.join(outDir, filepath), fig)
@@ -1118,7 +1132,7 @@ def CreateLine(
 
         out.AddFigure("Histograms (blocks and entries)", f'<img src="{filepath}" />')
 
-        # Axis histograms
+        # Axes histograms
 
         filepath = imagePrefix + "-hist-ax.png"
         fig, axs = plt.subplots(2, 1, figsize=(8, 8))
@@ -1131,9 +1145,9 @@ def CreateLine(
             xlabel="Nnz",
             yscale=params.histParams.axNnzScale,
         )
-        joinFactor = int(np.ceil(maxAxNnz / (MAX_HIST_BINS // 2)))
-        nbins = (maxAxNnz + joinFactor - 1) // joinFactor
-        bins = np.arange(nbins + 1) * joinFactor + 0.5
+        joinFactor = int(np.ceil((maxAxNnz + 1) / (MAX_HIST_BINS // 2)))
+        nbins = ((maxAxNnz + 1) + joinFactor - 1) // joinFactor
+        bins = np.arange(nbins + 1) * joinFactor - 0.5
         ax1.hist(
             [rowNnz, colNnz],
             bins,
@@ -1148,18 +1162,38 @@ def CreateLine(
         ax2.set(
             title="Row and col norms",
             xlabel="Value",
+            xscale=params.histParams.axNormXScale,
             yscale=params.histParams.axNormScale,
         )
-        nbins = MAX_HIST_BINS
-        bins = np.linspace(
-            min(rowNorms.min(), colNorms.min()),
-            max(rowNorms.max(), colNorms.max()),
-            nbins,
-        )
+        nbins = MAX_HIST_BINS // 2
+        bins = None
+        minV = min(rowNorms.min(), colNorms.min())
+        maxV = max(rowNorms.max(), colNorms.max())
+        if params.histParams.axNormXScale != "log":
+            bins = np.linspace(minV, maxV, nbins)
+        else:
+            # Exclude zero
+            if minV <= 0:
+                rowNorms = rowNorms[rowNorms > 0]
+                colNorms = colNorms[colNorms > 0]
+                minV = min(rowNorms.min(), colNorms.min())
+                exRows = 1 - len(rowNorms) / m
+                exCols = 1 - len(colNorms) / n
+                ax2.set_title(
+                    "Row and col norms (excluded "
+                    + f"{exRows * 100:.4f}% rows, "
+                    + f"{exCols * 100:.4f}% cols"
+                )
+            bins = np.geomspace(minV, maxV, nbins)
+        if minV == maxV:
+            bins = [minV / 2, maxV * 2]
         ax2.hist(
             [rowNorms, colNorms],
             bins,
-            weights=[np.repeat(1, m) / m, np.repeat(1, n) / n],
+            weights=[
+                np.repeat(1, len(rowNorms)) / m,
+                np.repeat(1, len(colNorms)) / n,
+            ],
             rwidth=1,
             color=["k", "r"],
         )
@@ -1941,7 +1975,7 @@ def ProcessParams(
         matrixData.matrix = matrixData.matrix.astype(np.float64)
 
     print(
-        f"\x1b[32m[{i + 1}/{nmats}] {params.name}\x1b[0m "
+        f"\x1b\x5b32m[{i + 1}/{nmats}] {params.name}\x1b\x5b0m "
         f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
         f"nnz={matrixData.matrix.getnnz():11.4e} ({nnz / (m * n) * 100:8.4f}%)"
     )
