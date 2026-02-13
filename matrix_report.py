@@ -45,6 +45,13 @@ def jit(f):
     return f
 
 
+def jitEager(*args, **kwargs):
+    def dec(f):
+        return f
+
+    return dec
+
+
 if importlib.util.find_spec("numba") is None:
     print("WARN: install numba to accelerate some computations")
 else:
@@ -54,6 +61,12 @@ else:
 
     def jit(f):
         return numba.njit(f, cache=True)
+
+    def jitEager(*args, **kwargs):
+        def dec(f):
+            return numba.njit(*args, **kwargs, cache=True)(f)
+
+        return dec
 
 # Graph
 
@@ -335,7 +348,15 @@ class ReportParams:
     graphParams: GraphParams | NoneType = None
 
 
-@jit
+tps = None
+if JIT_ENABLED:
+    tps = [
+        (numba.int64, numba.int64, numba.int32[:], numba.int32[:], numba.float64[:]),
+        (numba.int64, numba.int64, numba.int64[:], numba.int64[:], numba.float64[:]),
+    ]
+
+
+@jitEager(tps)
 def ComputeSymmetry(
     m: int,
     n: int,
@@ -1915,6 +1936,10 @@ def ProcessParams(
     )
     m, n = matrixData.matrix.shape
     nnz = matrixData.matrix.getnnz()
+
+    if matrixData.matrix.data.dtype != np.float64:
+        matrixData.matrix = matrixData.matrix.astype(np.float64)
+
     print(
         f"\x1b[32m[{i + 1}/{nmats}] {params.name}\x1b[0m "
         f"{matrixData.matrix.shape[0]} x {matrixData.matrix.shape[1]}, "
