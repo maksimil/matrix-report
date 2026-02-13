@@ -14,6 +14,7 @@ from typing import Literal
 from collections.abc import Callable
 import importlib
 import copy
+import itertools
 
 # -------------------------
 # --- Global parameters ---
@@ -1656,12 +1657,11 @@ def CreateLine(
             posArrays[:, 0, :] = (posArrays[:, 0, :] - minX) / (maxX - minX)
             posArrays[:, 1, :] = (posArrays[:, 1, :] - minY) / (maxY - minY)
 
-            images = None
-
-            with multiprocessing.Pool() as p:
-                images = p.starmap(
+            images = list(
+                itertools.starmap(
                     CreateGraphImage, [(g, posArrays[f]) for f in range(nFrames)]
                 )
+            )
 
             images[0].save(
                 os.path.join(outDir, filepath),
@@ -1763,6 +1763,9 @@ class MatrixLimit:
 
     def FDisabled():
         return FieldFactory(lambda: MatrixLimit.Disabled())
+
+    def Enabled():
+        return MatrixLimit()
 
     def FEnabled():
         return FieldFactory(lambda: MatrixLimit())
