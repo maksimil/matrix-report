@@ -32,6 +32,7 @@ MIN_PNG_SIZE = 1024
 MAX_HIST_BINS = 100
 HIST_ALPHA = 0.7
 LOG_SCALE_BLACK = 10
+EIGENVALUE_TOL = 1e-16
 
 # -----------------------------
 # --- Optional dependencies ---
@@ -124,7 +125,8 @@ def GetShadeColor(t, shadeParams):
     if shadeParams.scale != "linear":
         print("WARN: only linear shade scaling is supported")
 
-    color = COLOR_WHITE
+    color = np.zeros(3)
+    color += COLOR_WHITE
     if t <= 0:
         pass
     elif t < 0.5:
@@ -346,12 +348,60 @@ class ReportParams:
     graphParams: GraphParams | NoneType = None
 
 
-tps = None
+tps = []
 if JIT_ENABLED:
     tps = [
         (numba.int64, numba.int64, numba.int32[:], numba.int32[:], numba.float64[:]),
         (numba.int64, numba.int64, numba.int64[:], numba.int64[:], numba.float64[:]),
     ]
+
+
+@jitEager(
+    [
+        (*t, numba.int64, numba.int64, numba.int64, numba.int64, numba.float64)
+        for t in tps
+    ]
+)
+def CntVec(
+    m: int,
+    n: int,
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    values: np.ndarray,
+    i,
+    j,
+    iP,
+    jP,
+    v,
+):
+    res = np.zeros(5)  # lo, struc, numeric, up, pairs
+
+    if iP == i and jP == j:
+        return res
+
+    vP = np.nan
+
+    if iP >= 0 and iP < m and jP >= 0 and jP < n:
+        start = indptr[iP]
+        end = indptr[iP + 1]
+        kP = np.searchsorted(indices[start:end], jP) + start
+        if kP >= start and kP < end and indices[kP] == jP:
+            vP = values[kP]
+
+    if np.isnan(vP):
+        res[4] += 1
+        if j < jP:
+            res[0] += 1
+        else:
+            res[3] += 1
+    else:
+        if iP < i:
+            res[4] += 1
+            res[1] += 1
+            if v == vP:
+                res[2] += 1
+
+    return res
 
 
 @jitEager(tps)
@@ -362,11 +412,11 @@ def ComputeSymmetry(
     indices: np.ndarray,
     values: np.ndarray,
 ):
-    loCnt = 0
-    upCnt = 0
-    strCnt = 0
-    numCnt = 0
-    pairsCnt = 0
+    cntSymm = np.zeros(5)
+
+    cntPers = np.zeros(5)
+
+    r = min(m, n)
 
     for i in range(m):
         start = indptr[i]
@@ -377,37 +427,12 @@ def ComputeSymmetry(
             j = indices[k]
             v = values[k]
 
-            if i == j:
-                continue
+            cntSymm += CntVec(m, n, indptr, indices, values, i, j, j, i, v)
+            cntPers += CntVec(
+                m, n, indptr, indices, values, i, j, r - 1 - j, r - 1 - i, v
+            )
 
-            vSymm = np.nan
-
-            if j < m:
-                jStart = indptr[j]
-                jEnd = indptr[j + 1]
-                kSymm = np.searchsorted(indices[jStart:jEnd], i) + jStart
-                if kSymm >= jStart and kSymm < jEnd and indices[kSymm] == i:
-                    vSymm = values[kSymm]
-
-            if np.isnan(vSymm):
-                pairsCnt += 1
-                if j < i:
-                    loCnt += 1
-                else:
-                    upCnt += 1
-            else:
-                if j < i:
-                    pairsCnt += 1
-                    strCnt += 1
-                    if v == vSymm:
-                        numCnt += 1
-
-    loCnt = loCnt / pairsCnt * 100
-    upCnt = upCnt / pairsCnt * 100
-    strCnt = strCnt / pairsCnt * 100
-    numCnt = numCnt / pairsCnt * 100
-
-    return loCnt, strCnt, numCnt, upCnt
+    return cntSymm[0:4] / cntSymm[4] * 100, cntPers[0:4] / cntPers[4] * 100
 
 
 def FormatBytes(nbytes):
@@ -442,7 +467,7 @@ def ComputeImageSize(pxRows_, pxCols_, m, n):
     return pxRows, pxCols
 
 
-tps = None
+tps = []
 if JIT_ENABLED:
     tps = [
         (
@@ -536,12 +561,12 @@ def SaveImage(path, data):
 
     imageData = np.kron(data, multMat)
 
-    #  plt.imsave(path, imageData)
+    plt.imsave(path, imageData)
 
-    if imageData.dtype != np.int8:
-        imageData = (imageData * 255).astype(np.int8)
-    im = PIL.Image.frombytes("RGB", imageData.shape[:2], imageData.flatten())
-    im.save(path, "PNG")
+    #  if imageData.dtype != np.int8:
+    #      imageData = (imageData * 255).astype(np.int8)
+    #  im = PIL.Image.frombytes("RGB", imageData.shape[:2], imageData.flatten())
+    #  im.save(path, "PNG")
 
 
 def SaveFig(path, fig):
@@ -837,6 +862,9 @@ class HTMLOutput:
         )
 
 
+completedN = multiprocessing.Value("i", 0)
+
+
 class VerboseLogger:
     name: str
     startTime: float
@@ -860,9 +888,13 @@ class VerboseLogger:
     def Finish(self):
         now = time.perf_counter()
         ela = now - self.startTime
+        nval = 0
+        with completedN.get_lock():
+            completedN.value += 1
+            nval = completedN.value
         print(
             f"\x1b\x5b34m[{self.name:20s}] "
-            + f"{'Finished all':20s} ({ela:6.2f} s)\x1b\x5b0m"
+            + f"{f'Finished {nval}':20s} ({ela:6.2f} s)\x1b\x5b0m"
         )
 
 
@@ -915,7 +947,7 @@ def CreateLine(
 
     bandLower, bandUpper = scipy.sparse.linalg.spbandwidth(matrix)
 
-    lo, struc, numeric, up = ComputeSymmetry(
+    (lo, struc, numeric, up), (loP, strucP, numericP, upP) = ComputeSymmetry(
         m, n, matrix.indptr, matrix.indices, matrix.data
     )
 
@@ -930,8 +962,10 @@ def CreateLine(
         + f"pos range = ({minPos:11.4e}, {maxPos:11.4e})<br/>"
         + f"neg range = ({minNeg:11.4e}, {maxNeg:11.4e})<br/>"
         + f"bandwidth = ({bandLower:11d}, {bandUpper:11d})<br/>"
-        + "symmetry =<br/>"
+        + "symmetry    =<br/>"
         + f"{lo:8.4f}% / {struc:8.4f}% ({numeric:8.4f}%) / {up:8.4f}%<br/>"
+        + "persymmetry =<br/>"
+        + f"{loP:8.4f}% / {strucP:8.4f}% ({numericP:8.4f}%) / {upP:8.4f}%<br/>"
         + f"size as CSR   = {csrSize:8.4f} {csrSizeUnits}<br/>"
         + f"size as Dense = {denseSize:8.4f} {denseSizeUnits}<br/>",
     )
@@ -1365,13 +1399,22 @@ def CreateLine(
         plotData = np.zeros((len(spectrum), 3))
         uniqueValues = 0
         realCount = 0
+        imagCount = 0
+        unitCount = 0
+        ballCount = 0
 
         for z in spectrum:
-            if abs(z.imag) < 1e-16:
+            if np.abs(z.imag) < EIGENVALUE_TOL:
                 realCount += 1
+            if np.abs(z.real) < EIGENVALUE_TOL:
+                imagCount += 1
+            if np.abs(np.abs(z) - 1) < EIGENVALUE_TOL:
+                unitCount += 1
+            if np.abs(z) <= 1 - EIGENVALUE_TOL:
+                ballCount += 1
             multiple = False
             for k in range(uniqueValues):
-                if abs(z - (plotData[k, 0] + plotData[k, 1] * 1j)) < 1e-16:
+                if abs(z - (plotData[k, 0] + plotData[k, 1] * 1j)) < EIGENVALUE_TOL:
                     plotData[k, 2] += 1
                     multiple = True
                 break
@@ -1413,6 +1456,9 @@ def CreateLine(
             + f"imag range = ({plotData[:, 1].min():11.4e}, {plotData[:, 1].max():11.4e})<br/>"
             + f"abs  range = ({absArr.min():11.4e}, {absArr.max():11.4e})<br/>"
             + f"real l     = {realCount} ({realCount / n * 100:8.4f}%)<br/>"
+            + f"imag l     = {imagCount} ({imagCount / n * 100:8.4f}%)<br/>"
+            + f"unit |l|   = {unitCount} ({unitCount / n * 100:8.4f}%)<br/>"
+            + f"|l| < 1    = {ballCount} ({ballCount / n * 100:8.4f}%)<br/>"
             + f"max mult   = {int(maxMult)}<br/>",
         )
 
